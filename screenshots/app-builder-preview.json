@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Verbatim",
+      "hasCanvas": false,
+      "bodyTextLen": 345,
+      "bodyTextHash": "0841d663cef236b9332f99cc7dc64141ca1c2279e7bfc8be4a11651aaf0b8b67",
+      "bodyTextPrefix": "Verbatim The full take, not a summary. Recents Single Bulk URL T",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Verbatim",
+      "hasCanvas": false,
+      "bodyTextLen": 315,
+      "bodyTextHash": "d19dafd08e9a54f34671312617f52fcd55438fea41679410ffa272cc43df7f33",
+      "bodyTextPrefix": "Verbatim Recents Single Bulk URL Transcribe Pause Me at the Zoo ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [
+    "BRAND NOTE: no custom public/og.jpg — the platform will serve the og.grok.me placeholder. Custom cards are the default for games of every kind (DOM board/word games included), whimsical apps, creative tools, and brand-forward pages — only plain utilities (converters, CRUD trackers, admin dashboards) keep the placeholder. If this app is not a plain utility, finish the brand-asset pass per /workspace/.grok/skills/og/SKILL.md."
+  ],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}

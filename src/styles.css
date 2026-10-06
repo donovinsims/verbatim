@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0e0e10;
+  --color-ink-2: #161618;
+  --color-fg: #ecece8;
+  --color-muted: #9a9a94;
+  --color-paper: #f3eee4;
+  --color-paper-ink: #1c1917;
+  --color-paper-muted: #6f6a62;
+  --color-accent: #c4a574;
+  --color-danger: #d46a6a;
+  --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+  --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-paper:
+    0 0 0 1px rgba(28, 25, 23, 0.06),
+    0 1px 2px -1px rgba(28, 25, 23, 0.06),
+    0 12px 32px -16px rgba(14, 14, 16, 0.35);
+  --shadow-menu: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 16px 40px -20px rgba(0, 0, 0, 0.6);
+}
+
+@layer base {
+  html {
+    background: var(--color-ink);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  textarea,
+  input {
+    font-family: inherit;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
