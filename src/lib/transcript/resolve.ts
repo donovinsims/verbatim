@@ -3,12 +3,16 @@ import { parseSourceUrl } from "./parse-url";
 import { resolvePodcast } from "./podcast";
 import type { FetchResponse, TranscriptInput } from "./types";
 import { resolveYoutube } from "./youtube";
+import { withRequestSignal } from "./http";
 
-const OVERALL_TIMEOUT_MS = 120_000;
+const OVERALL_TIMEOUT_MS = 240_000;
 
 export async function resolveTranscript(input: TranscriptInput): Promise<FetchResponse> {
+  const controller = new AbortController();
   try {
-    return await withTimeout(resolveTranscriptInner(input), OVERALL_TIMEOUT_MS);
+    return await withRequestSignal(controller.signal, () =>
+      withTimeout(resolveTranscriptInner(input), OVERALL_TIMEOUT_MS, controller),
+    );
   } catch (err) {
     return toErrorResult(err);
   }
@@ -25,6 +29,7 @@ async function resolveTranscriptInner(input: TranscriptInput): Promise<FetchResp
   const parsed = parseSourceUrl(url);
   switch (parsed.kind) {
     case "youtube-video":
+      return resolveYoutube(parsed);
     case "youtube-playlist":
       return resolveYoutube(parsed);
     case "apple-episode":
@@ -41,7 +46,10 @@ async function resolveTranscriptInner(input: TranscriptInput): Promise<FetchResp
       try {
         return await resolvePodcast({ url }, parsed);
       } catch (err) {
-        if (err instanceof TranscriptError && (err.code === "unsupported" || err.code === "invalid_url")) {
+        if (
+          err instanceof TranscriptError &&
+          (err.code === "unsupported" || err.code === "invalid_url")
+        ) {
           return errorResult(
             "invalid_url",
             "Paste a YouTube, Apple Podcasts, Spotify, or RSS link.",
@@ -57,9 +65,10 @@ function ensureScheme(raw: string): string {
   return /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, controller: AbortController): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
+      controller.abort(new DOMException("The transcript request timed out.", "TimeoutError"));
       reject(new TranscriptError("timeout", "The transcript request timed out."));
     }, ms);
     promise.then(

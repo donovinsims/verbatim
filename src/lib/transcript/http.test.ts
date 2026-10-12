@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { decodeHtmlEntities, fetchText, readLimited, stripHtml } from "./http";
+import { decodeHtmlEntities, fetchText, readLimited, stripHtml, withRequestSignal } from "./http";
 
 describe("html helpers", () => {
   it("decodes entities and strips tags", () => {
@@ -22,8 +22,36 @@ describe("user-agent", () => {
     const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     await fetchText("https://example.com/x");
-    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit | undefined] | undefined;
+    const call = fetchMock.mock.calls[0] as unknown as
+      [string, RequestInit | undefined] | undefined;
     const headers = new Headers(call?.[1]?.headers);
     expect(headers.get("User-Agent")).toMatch(/Mozilla/);
+  });
+});
+
+describe("request cancellation", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("aborts an in-flight upstream fetch when the request deadline is cancelled", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = withRequestSignal(controller.signal, () =>
+      fetchText("https://example.com/slow"),
+    );
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ code: "timeout" });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

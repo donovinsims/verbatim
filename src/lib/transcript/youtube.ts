@@ -1,5 +1,14 @@
 import { TranscriptError } from "./errors";
-import { BROWSER_UA, extractJsonObject, fetchJson, fetchResponse, fetchText, stripHtml } from "./http";
+import { fetchTranscriptApi } from "./transcript-api";
+import {
+  BROWSER_UA,
+  extractJsonObject,
+  fetchJson,
+  fetchResponse,
+  fetchText,
+  readLimited,
+  stripHtml,
+} from "./http";
 import { isGoodEpisodeMatch } from "./match";
 import { parseCaptionBytes } from "./parse-caption";
 import { countWords, flattenCues, parseClockToMs } from "./time";
@@ -10,6 +19,16 @@ const WEB_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const ANDROID_KEY = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w";
 const COLLECTION_CAP = 40;
 const YT_COOKIES = "CONSENT=YES+; SOCS=CAI";
+const INVIDIOUS_HOSTS = [
+  "https://inv.nadeko.net",
+  "https://invidious.nerdvpn.de",
+  "https://invidious.f5.si",
+  "https://invidious.tiekoetter.com",
+  "https://yewtu.be",
+];
+const YOUTUBE2TEXT_DEMO_KEY_URL = "https://youtube2text.org/api/demo-key";
+const YOUTUBE2TEXT_URL = "https://youtube2text.org/api/transcribe";
+let youtube2textDemoKey: { value: string; expiresAt: number } | undefined;
 
 type PlayerResponse = {
   videoDetails?: {
@@ -59,27 +78,245 @@ const CLIENTS: InnertubeClient[] = [
   { name: "WEB", version: "2.20241201.01.00", key: WEB_KEY },
 ];
 
-export async function resolveYoutube(parsed: ParsedSourceUrl): Promise<TranscriptResult | CollectionResult> {
+export async function resolveYoutube(
+  parsed: ParsedSourceUrl,
+): Promise<TranscriptResult | CollectionResult> {
   if (parsed.kind === "youtube-playlist" || (!parsed.videoId && parsed.playlistId)) {
     return fetchPlaylist(parsed.playlistId!, parsed.canonicalUrl);
   }
   if (!parsed.videoId) {
     throw new TranscriptError("invalid_url", "That YouTube link is missing a video id.");
   }
-  return fetchVideoTranscript(parsed.videoId, parsed.canonicalUrl);
+  return fetchVideoTranscriptWithFallback(parsed.videoId, parsed.canonicalUrl);
 }
 
-export async function fetchVideoTranscript(videoId: string, sourceUrl: string): Promise<TranscriptResult> {
+export async function fetchVideoTranscriptWithFallback(
+  videoId: string,
+  sourceUrl: string,
+): Promise<TranscriptResult> {
+  try {
+    return await fetchVideoTranscript(videoId, sourceUrl);
+  } catch (primaryError) {
+    if (!shouldUseTranscriptApiFallback(primaryError)) throw primaryError;
+    const failures: unknown[] = [primaryError];
+
+    try {
+      return await fetchInvidiousTranscript(videoId, sourceUrl);
+    } catch (err) {
+      if (!shouldUseTranscriptApiFallback(err)) throw err;
+      failures.push(err);
+    }
+
+    if (process.env.TRANSCRIPTAPI_API_KEY?.trim()) {
+      try {
+        return await fetchTranscriptApi(videoId, sourceUrl);
+      } catch (err) {
+        if (!shouldUseTranscriptApiFallback(err)) throw err;
+        failures.push(err);
+      }
+    }
+
+    try {
+      return await fetchYoutube2TextTranscript(videoId, sourceUrl);
+    } catch (err) {
+      if (!shouldUseTranscriptApiFallback(err)) throw err;
+      failures.push(err);
+    }
+
+    const providerError = failures.find(
+      (err) => err instanceof TranscriptError && err.code === "provider_unavailable",
+    );
+    if (providerError) throw providerError;
+    if (failures.some((err) => err instanceof TranscriptError && err.code === "no_transcript")) {
+      throw new TranscriptError(
+        "no_transcript",
+        "No transcript was available from YouTube or the hosted transcript providers.",
+        "This video may not have public captions, or the transcript providers may be temporarily unavailable.",
+      );
+    }
+    throw new TranscriptError(
+      "network",
+      "YouTube and its transcript providers could not be reached. Try again later.",
+    );
+  }
+}
+
+async function fetchInvidiousTranscript(
+  videoId: string,
+  sourceUrl: string,
+): Promise<TranscriptResult> {
+  for (const host of INVIDIOUS_HOSTS) {
+    try {
+      const payload = await fetchJson<{ captions?: InvidiousCaption[] }>(
+        `${host}/api/v1/captions/${videoId}`,
+        {
+          timeoutMs: 12_000,
+          accept: "application/json",
+        },
+      );
+      const tracks = payload.captions ?? [];
+      const track = pickInvidiousCaption(tracks);
+      if (!track?.url) continue;
+      const response = await fetchResponse(new URL(track.url, host).toString(), {
+        timeoutMs: 15_000,
+        userAgent: BROWSER_UA,
+      });
+      if (!response.ok) continue;
+      const bytes = await readLimited(response, 8 * 1024 * 1024);
+      const cues = parseCaptionBytes(bytes, response.headers.get("content-type") ?? track.mimeType);
+      if (!cues.length) continue;
+      const text = flattenCues(cues);
+      return makeProviderTranscript(videoId, sourceUrl, cues, text, {
+        title: `YouTube ${videoId}`,
+        language: track.languageCode,
+      });
+    } catch (err) {
+      // Public instances vary in uptime and may reject an endpoint independently.
+      // Keep trying the remaining instances before declaring this source unavailable.
+      if (err instanceof TranscriptError && err.code === "too_large") throw err;
+    }
+  }
+  throw new TranscriptError("no_transcript", "The public transcript mirrors found no captions.");
+}
+
+type InvidiousCaption = {
+  label?: string;
+  languageCode?: string;
+  url?: string;
+  mimeType?: string;
+};
+
+function pickInvidiousCaption(captions: InvidiousCaption[]): InvidiousCaption | undefined {
+  if (!Array.isArray(captions) || !captions.length) return undefined;
+  return (
+    captions.find((caption) => /^en(?:[-_]|$)/i.test(caption.languageCode ?? "")) ??
+    captions.find((caption) => /english/i.test(caption.label ?? "")) ??
+    captions[0]
+  );
+}
+
+async function fetchYoutube2TextTranscript(
+  videoId: string,
+  sourceUrl: string,
+): Promise<TranscriptResult> {
+  const key = await getYoutube2TextDemoKey();
+  const url = new URL(YOUTUBE2TEXT_URL);
+  url.searchParams.set("url", `https://www.youtube.com/watch?v=${videoId}`);
+  url.searchParams.set("maxChars", "150000");
+  const response = await fetchResponse(url.toString(), {
+    timeoutMs: 25_000,
+    headers: { "x-api-key": key },
+    accept: "application/json",
+  });
+  if (response.status === 404 || response.status === 422) {
+    throw new TranscriptError("no_transcript", "The hosted transcript service found no captions.");
+  }
+  if (response.status === 429) {
+    throw new TranscriptError(
+      "rate_limited",
+      "The hosted transcript service is busy. Try again later.",
+    );
+  }
+  if (!response.ok) {
+    throw new TranscriptError(
+      "network",
+      `The hosted transcript service returned HTTP ${response.status}.`,
+    );
+  }
+  const payload = (await response.json()) as {
+    result?: { content?: unknown; title?: unknown };
+    error?: { code?: unknown; message?: unknown };
+  };
+  if (payload.error) {
+    if (payload.error.code === "TRANSCRIPT_UNAVAILABLE") {
+      throw new TranscriptError(
+        "no_transcript",
+        "The hosted transcript service found no captions.",
+      );
+    }
+    throw new TranscriptError(
+      "blocked",
+      "The hosted transcript service could not transcribe this video.",
+    );
+  }
+  const text = typeof payload.result?.content === "string" ? payload.result.content.trim() : "";
+  if (!text)
+    throw new TranscriptError(
+      "no_transcript",
+      "The hosted transcript service returned no transcript text.",
+    );
+  const cues: Cue[] = [{ startMs: 0, endMs: 1000, text }];
+  return makeProviderTranscript(videoId, sourceUrl, cues, text, {
+    title:
+      typeof payload.result?.title === "string" && payload.result.title.trim()
+        ? payload.result.title.trim()
+        : `YouTube ${videoId}`,
+    author: "YouTube",
+  });
+}
+
+async function getYoutube2TextDemoKey(): Promise<string> {
+  if (youtube2textDemoKey && youtube2textDemoKey.expiresAt > Date.now())
+    return youtube2textDemoKey.value;
+  const response = await fetchResponse(YOUTUBE2TEXT_DEMO_KEY_URL, {
+    timeoutMs: 12_000,
+    accept: "application/json",
+  });
+  if (!response.ok)
+    throw new TranscriptError(
+      "provider_unavailable",
+      "The hosted transcript service is unavailable.",
+    );
+  const payload = (await response.json()) as { apiKey?: unknown; key?: unknown };
+  const key =
+    typeof payload.apiKey === "string"
+      ? payload.apiKey
+      : typeof payload.key === "string"
+        ? payload.key
+        : "";
+  if (!key.trim())
+    throw new TranscriptError(
+      "provider_unavailable",
+      "The hosted transcript service did not provide an access key.",
+    );
+  youtube2textDemoKey = { value: key, expiresAt: Date.now() + 30 * 60_000 };
+  return key;
+}
+
+function makeProviderTranscript(
+  videoId: string,
+  sourceUrl: string,
+  cues: Cue[],
+  text: string,
+  metadata: { title: string; author?: string; language?: string },
+): TranscriptResult {
+  return {
+    kind: "transcript",
+    title: metadata.title,
+    author: metadata.author,
+    source: "youtube",
+    sourceUrl,
+    canonicalUrl: `https://www.youtube.com/watch?v=${videoId}`,
+    language: metadata.language,
+    cues,
+    text,
+    wordCount: countWords(text),
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+export async function fetchVideoTranscript(
+  videoId: string,
+  sourceUrl: string,
+): Promise<TranscriptResult> {
   const player = await loadPlayer(videoId);
   const status = player.playabilityStatus?.status;
   if (status && status !== "OK") {
     const reason = player.playabilityStatus?.reason ?? status;
-    if (status === "LOGIN_REQUIRED" || status === "UNPLAYABLE" || /sign in|unavailable|private/i.test(reason)) {
+    if (isDefinitiveRestriction(status, reason)) {
       throw new TranscriptError("blocked", `YouTube blocked playback (${reason}).`);
     }
-    if (status === "ERROR") {
-      throw new TranscriptError("not_found", reason || "YouTube could not find that video.");
-    }
+    throw new TranscriptError("network", `YouTube could not confirm playback (${reason}).`);
   }
   const tracks = player.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
   if (!tracks.length) {
@@ -91,14 +328,19 @@ export async function fetchVideoTranscript(videoId: string, sourceUrl: string): 
   }
   const track = pickCaptionTrack(tracks);
   if (!track?.baseUrl) {
-    throw new TranscriptError("no_transcript", "Caption tracks were listed but none could be downloaded.");
+    throw new TranscriptError(
+      "no_transcript",
+      "Caption tracks were listed but none could be downloaded.",
+    );
   }
   const { cues, isAutoGenerated, language } = await downloadTrack(track);
   if (!cues.length) {
     throw new TranscriptError("no_transcript", "The caption track was empty.");
   }
   const details = player.videoDetails;
-  const durationSec = Number(details?.lengthSeconds ?? player.microformat?.playerMicroformatRenderer?.lengthSeconds ?? 0);
+  const durationSec = Number(
+    details?.lengthSeconds ?? player.microformat?.playerMicroformatRenderer?.lengthSeconds ?? 0,
+  );
   const text = flattenCues(cues);
   return {
     kind: "transcript",
@@ -127,7 +369,10 @@ export async function searchYoutubeForEpisode(
   for (const hit of hits.slice(0, 8)) {
     if (!isGoodEpisodeMatch(title, hit.title, durationMs, hit.durationMs)) continue;
     try {
-      const transcript = await fetchVideoTranscript(hit.videoId, `https://www.youtube.com/watch?v=${hit.videoId}`);
+      const transcript = await fetchVideoTranscriptWithFallback(
+        hit.videoId,
+        `https://www.youtube.com/watch?v=${hit.videoId}`,
+      );
       if (isGoodEpisodeMatch(title, transcript.title, durationMs, transcript.durationMs)) {
         return transcript;
       }
@@ -143,31 +388,58 @@ async function loadPlayer(videoId: string): Promise<PlayerResponse> {
   if (fromWatch && hasUsablePlayer(fromWatch)) return fromWatch;
 
   let lastErr: unknown;
+  let playbackIssue: PlayerResponse | undefined;
   for (const client of CLIENTS) {
     try {
       const player = await playerFromInnertube(videoId, client);
-      if (hasUsablePlayer(player) || player.playabilityStatus) return player;
+      if (hasUsablePlayer(player)) return player;
+      if (player.playabilityStatus) {
+        playbackIssue = player;
+        const reason = player.playabilityStatus.reason ?? player.playabilityStatus.status ?? "";
+        if (isDefinitiveRestriction(player.playabilityStatus.status ?? "", reason)) return player;
+      }
     } catch (err) {
       lastErr = err;
     }
   }
+  if (playbackIssue) return playbackIssue;
   if (fromWatch) return fromWatch;
   if (lastErr instanceof TranscriptError) throw lastErr;
   throw new TranscriptError("blocked", "YouTube did not return a player response.");
 }
 
+function isDefinitiveRestriction(status: string, reason: string): boolean {
+  return (
+    /private|deleted|removed|taken down|sign in|log in|age.?restrict|members.?only|account.*restrict/i.test(
+      reason,
+    ) ||
+    (status === "LOGIN_REQUIRED" && /login|sign.?in|age|account|member/i.test(reason))
+  );
+}
+
+function shouldUseTranscriptApiFallback(err: unknown): boolean {
+  return (
+    err instanceof TranscriptError &&
+    ["no_transcript", "network", "timeout", "rate_limited"].includes(err.code)
+  );
+}
+
 function hasUsablePlayer(player: PlayerResponse): boolean {
+  if (player.playabilityStatus?.status && player.playabilityStatus.status !== "OK") return false;
   const tracks = player.captions?.playerCaptionsTracklistRenderer?.captionTracks;
   return Boolean(tracks?.length) || player.playabilityStatus?.status === "OK";
 }
 
 async function playerFromWatchPage(videoId: string): Promise<PlayerResponse | null> {
   try {
-    const html = await fetchText(`https://www.youtube.com/watch?v=${videoId}&hl=en&bpctr=9999999999&has_verified=1`, {
-      timeoutMs: 18_000,
-      headers: { Cookie: YT_COOKIES, "Accept-Language": "en-US,en;q=0.9" },
-      userAgent: BROWSER_UA,
-    });
+    const html = await fetchText(
+      `https://www.youtube.com/watch?v=${videoId}&hl=en&bpctr=9999999999&has_verified=1`,
+      {
+        timeoutMs: 18_000,
+        headers: { Cookie: YT_COOKIES, "Accept-Language": "en-US,en;q=0.9" },
+        userAgent: BROWSER_UA,
+      },
+    );
     const json =
       extractJsonObject(html, "ytInitialPlayerResponse") ??
       extractJsonObject(html, "var ytInitialPlayerResponse");
@@ -177,7 +449,10 @@ async function playerFromWatchPage(videoId: string): Promise<PlayerResponse | nu
   }
 }
 
-async function playerFromInnertube(videoId: string, client: InnertubeClient): Promise<PlayerResponse> {
+async function playerFromInnertube(
+  videoId: string,
+  client: InnertubeClient,
+): Promise<PlayerResponse> {
   const key = client.key ?? WEB_KEY;
   const url = `https://www.youtube.com/youtubei/v1/player?prettyPrint=false&key=${key}`;
   const body = {
@@ -189,7 +464,9 @@ async function playerFromInnertube(videoId: string, client: InnertubeClient): Pr
         gl: "US",
         ...client.extra,
       },
-      thirdParty: client.name.includes("EMBEDDED") ? { embedUrl: "https://www.youtube.com/" } : undefined,
+      thirdParty: client.name.includes("EMBEDDED")
+        ? { embedUrl: "https://www.youtube.com/" }
+        : undefined,
     },
     videoId,
     contentCheckOk: true,
@@ -207,7 +484,10 @@ async function playerFromInnertube(videoId: string, client: InnertubeClient): Pr
       "X-YouTube-Client-Name": client.name === "ANDROID" ? "3" : "1",
       "X-YouTube-Client-Version": client.version,
     },
-    userAgent: client.name === "ANDROID" ? "com.google.android.youtube/19.29.37 (Linux; U; Android 14)" : BROWSER_UA,
+    userAgent:
+      client.name === "ANDROID"
+        ? "com.google.android.youtube/19.29.37 (Linux; U; Android 14)"
+        : BROWSER_UA,
   });
 }
 
@@ -247,8 +527,11 @@ async function downloadTrack(track: CaptionTrack): Promise<{
       });
       if (!res.ok) continue;
       const buf = new Uint8Array(await res.arrayBuffer());
-      const mime =
-        url.includes("fmt=json3") ? "application/json3" : url.includes("fmt=vtt") ? "text/vtt" : res.headers.get("content-type") ?? "";
+      const mime = url.includes("fmt=json3")
+        ? "application/json3"
+        : url.includes("fmt=vtt")
+          ? "text/vtt"
+          : (res.headers.get("content-type") ?? "");
       const cues = parseCaptionBytes(buf, mime);
       if (cues.length) {
         return {
@@ -280,7 +563,10 @@ function decodeAmp(url: string): string {
   return url.replace(/&/g, "&");
 }
 
-export async function fetchPlaylist(playlistId: string, sourceUrl: string): Promise<CollectionResult> {
+export async function fetchPlaylist(
+  playlistId: string,
+  sourceUrl: string,
+): Promise<CollectionResult> {
   const items = await playlistItems(playlistId);
   if (!items.length) {
     throw new TranscriptError("not_found", "That playlist is empty or unavailable.");
@@ -316,7 +602,11 @@ async function playlistItems(playlistId: string): Promise<CollectionItem[]> {
           context: { client: { clientName: "WEB", clientVersion: "2.20241201.01.00", hl: "en" } },
           browseId: `VL${playlistId}`,
         }),
-        headers: { "Content-Type": "application/json", Cookie: YT_COOKIES, Origin: "https://www.youtube.com" },
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: YT_COOKIES,
+          Origin: "https://www.youtube.com",
+        },
         timeoutMs: 18_000,
       },
     );
@@ -359,7 +649,11 @@ function textRuns(value: unknown): string {
     const rec = value as Record<string, unknown>;
     if (typeof rec.simpleText === "string") return rec.simpleText;
     if (Array.isArray(rec.runs)) {
-      return rec.runs.map((r) => (r && typeof r === "object" && "text" in r ? String((r as { text: string }).text) : "")).join("");
+      return rec.runs
+        .map((r) =>
+          r && typeof r === "object" && "text" in r ? String((r as { text: string }).text) : "",
+        )
+        .join("");
     }
   }
   return "";
@@ -377,7 +671,11 @@ async function searchYoutube(query: string): Promise<SearchHit[]> {
           context: { client: { clientName: "WEB", clientVersion: "2.20241201.01.00", hl: "en" } },
           query,
         }),
-        headers: { "Content-Type": "application/json", Cookie: YT_COOKIES, Origin: "https://www.youtube.com" },
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: YT_COOKIES,
+          Origin: "https://www.youtube.com",
+        },
         timeoutMs: 18_000,
       },
     );
@@ -387,10 +685,13 @@ async function searchYoutube(query: string): Promise<SearchHit[]> {
     /* scrape */
   }
   try {
-    const html = await fetchText(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
-      timeoutMs: 18_000,
-      headers: { Cookie: YT_COOKIES },
-    });
+    const html = await fetchText(
+      `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
+      {
+        timeoutMs: 18_000,
+        headers: { Cookie: YT_COOKIES },
+      },
+    );
     const data = extractJsonObject(html, "ytInitialData");
     return walkSearch(data);
   } catch {

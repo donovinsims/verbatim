@@ -1,4 +1,15 @@
 import { TranscriptError } from "./errors";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+const requestSignalStorage = new AsyncLocalStorage<AbortSignal>();
+
+export function withRequestSignal<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+  return requestSignalStorage.run(signal, run);
+}
+
+export function requestSignal(): AbortSignal | undefined {
+  return requestSignalStorage.getStore();
+}
 
 export const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -16,11 +27,13 @@ export type HttpOptions = {
   method?: string;
   body?: string;
   accept?: string;
+  signal?: AbortSignal;
 };
 
 export async function fetchResponse(url: string, opts: HttpOptions = {}): Promise<Response> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
+  const upstreamSignal = opts.signal ?? requestSignal();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers: Record<string, string> = {
@@ -34,7 +47,9 @@ export async function fetchResponse(url: string, opts: HttpOptions = {}): Promis
       headers,
       body: opts.body,
       redirect: "follow",
-      signal: controller.signal,
+      signal: upstreamSignal
+        ? AbortSignal.any([controller.signal, upstreamSignal])
+        : controller.signal,
     });
     return res;
   } catch (err) {
@@ -71,8 +86,14 @@ export async function fetchJson<T>(url: string, opts: HttpOptions = {}): Promise
 
 export async function fetchHead(url: string, opts: HttpOptions = {}): Promise<Response> {
   try {
-    return await fetchResponse(url, { ...opts, method: "HEAD", timeoutMs: opts.timeoutMs ?? 10_000 });
+    return await fetchResponse(url, {
+      ...opts,
+      method: "HEAD",
+      timeoutMs: opts.timeoutMs ?? 10_000,
+    });
   } catch {
+    if (opts.signal?.aborted || requestSignal()?.aborted)
+      throw new TranscriptError("timeout", "The request was aborted.");
     return fetchResponse(url, { ...opts, method: "GET", timeoutMs: opts.timeoutMs ?? 10_000 });
   }
 }
@@ -180,7 +201,9 @@ export function decodeHtmlEntities(input: string): string {
 }
 
 export function stripHtml(input: string): string {
-  return decodeHtmlEntities(input.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+  return decodeHtmlEntities(input.replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function extractJsonObject(source: string, marker: string): unknown | null {

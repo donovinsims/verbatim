@@ -33,6 +33,9 @@ type RssFeed = {
   author?: string;
   feedUrl: string;
   items: RssItem[];
+  resolvedEpisodeTitle?: string;
+  resolvedEpisodeGuid?: string;
+  resolvedAppleEpisodeId?: string;
 };
 
 type RssItem = {
@@ -74,9 +77,9 @@ export async function resolvePodcast(
 
   const item = matchItem(resolved.items, {
     url: input.url,
-    guid: input.guid,
-    titleHint: titleHintFromSource(source, input),
-    appleEpisodeId: source.appleEpisodeId,
+    guid: input.guid ?? resolved.resolvedEpisodeGuid,
+    titleHint: titleHintFromSource(source, input) ?? resolved.resolvedEpisodeTitle,
+    appleEpisodeId: source.appleEpisodeId ?? resolved.resolvedAppleEpisodeId,
     spotifyUrl: source.kind.startsWith("spotify") ? source.canonicalUrl : undefined,
   });
 
@@ -112,16 +115,32 @@ async function resolveFeed(input: TranscriptInput, parsed: ParsedSourceUrl): Pro
 async function resolveApple(parsed: ParsedSourceUrl): Promise<RssFeed> {
   const lookupId = parsed.appleEpisodeId ?? parsed.appleShowId;
   if (!lookupId) throw new TranscriptError("invalid_url", "Apple Podcasts id is missing.");
+  const entity = parsed.kind === "apple-episode" ? "podcastEpisode" : "podcast";
   const data = await fetchJson<ItunesLookup>(
-    `https://itunes.apple.com/lookup?id=${encodeURIComponent(lookupId)}&entity=podcast`,
+    `https://itunes.apple.com/lookup?id=${encodeURIComponent(lookupId)}&entity=${entity}`,
     { timeoutMs: 15_000, userAgent: PODCAST_UA },
   );
   const row = data.results?.[0];
-  const feedUrl = row?.feedUrl;
+  let feedUrl = row?.feedUrl;
+  if (!feedUrl && row?.collectionId) {
+    const show = await fetchJson<ItunesLookup>(
+      `https://itunes.apple.com/lookup?id=${encodeURIComponent(row.collectionId)}&entity=podcast`,
+      { timeoutMs: 15_000, userAgent: PODCAST_UA },
+    );
+    feedUrl = show.results?.find((result) => result.feedUrl)?.feedUrl;
+  }
   if (!feedUrl) {
     throw new TranscriptError("not_found", "Apple did not return an RSS feed for that show.");
   }
-  return fetchRss(feedUrl);
+  const feed = await fetchRss(feedUrl);
+  return parsed.kind === "apple-episode"
+    ? {
+        ...feed,
+        resolvedEpisodeTitle: row?.trackName,
+        resolvedEpisodeGuid: row?.episodeGuid,
+        resolvedAppleEpisodeId: parsed.appleEpisodeId ?? (String(row?.trackId ?? "") || undefined),
+      }
+    : feed;
 }
 
 async function resolveSpotify(parsed: ParsedSourceUrl): Promise<RssFeed> {
@@ -134,23 +153,85 @@ async function resolveSpotify(parsed: ParsedSourceUrl): Promise<RssFeed> {
   const author = oembed?.author_name;
   const query = [title, author].filter(Boolean).join(" ");
   if (!query) {
-    throw new TranscriptError("not_found", "Spotify did not return enough metadata to find an RSS feed.");
+    throw new TranscriptError(
+      "not_found",
+      "Spotify did not return enough metadata to find an RSS feed.",
+    );
   }
 
-  const entity = parsed.kind === "spotify-show" ? "podcast" : "podcastEpisode";
+  if (parsed.kind === "spotify-show") {
+    const showSearch = await fetchJson<ItunesSearch>(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=podcast&limit=8`,
+      { timeoutMs: 15_000, userAgent: PODCAST_UA },
+    );
+    const show = (showSearch.results ?? []).find(
+      (r) =>
+        r.collectionId &&
+        r.feedUrl &&
+        scoreTitle(r.collectionName ?? "", title ?? author ?? "") >= 0.78,
+    );
+    if (!show?.feedUrl)
+      throw new TranscriptError("not_found", "Could not map that Spotify show to an RSS feed.");
+    return fetchRss(show.feedUrl);
+  }
+
   const search = await fetchJson<ItunesSearch>(
-    `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=${entity}&limit=8`,
+    `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=podcastEpisode&limit=12`,
     { timeoutMs: 15_000, userAgent: PODCAST_UA },
   );
-  const hit = (search.results ?? []).find((r) => r.feedUrl && (!title || scoreTitle(r.trackName ?? r.collectionName ?? "", title) > 0.45));
-  const feedUrl = hit?.feedUrl ?? search.results?.find((r) => r.feedUrl)?.feedUrl;
-  if (!feedUrl) {
-    throw new TranscriptError("not_found", "Could not map that Spotify link to an RSS feed.");
+  const candidates = (search.results ?? [])
+    .filter((r) => r.collectionId && r.trackName)
+    .map((r) => ({ r, score: scoreTitle(r.trackName ?? "", title ?? "") }))
+    .sort((a, b) => b.score - a.score);
+  const episode = candidates[0];
+  if (!episode?.r.collectionId || episode.score < 0.78) {
+    if (!author) {
+      throw new TranscriptError(
+        "not_found",
+        "Could not confidently match that Spotify episode to a podcast feed.",
+      );
+    }
+    const showSearch = await fetchJson<ItunesSearch>(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(author)}&entity=podcast&limit=8`,
+      { timeoutMs: 15_000, userAgent: PODCAST_UA },
+    );
+    const show = (showSearch.results ?? []).find(
+      (r) => r.feedUrl && scoreTitle(r.collectionName ?? "", author) >= 0.75,
+    );
+    if (!show?.feedUrl) {
+      throw new TranscriptError(
+        "not_found",
+        "Could not confidently match that Spotify episode to a podcast feed.",
+      );
+    }
+    return fetchRss(show.feedUrl);
   }
-  return fetchRss(feedUrl);
+  const lookup = await fetchJson<ItunesLookup>(
+    `https://itunes.apple.com/lookup?id=${encodeURIComponent(episode.r.collectionId)}&entity=podcast`,
+    { timeoutMs: 15_000, userAgent: PODCAST_UA },
+  );
+  const show = lookup.results?.find((r) => r.feedUrl);
+  if (!show?.feedUrl)
+    throw new TranscriptError("not_found", "Could not find an RSS feed for that Spotify episode.");
+  const feed = await fetchRss(show.feedUrl);
+  return {
+    ...feed,
+    resolvedEpisodeTitle: episode.r.trackName,
+    resolvedEpisodeGuid: episode.r.episodeGuid,
+    resolvedAppleEpisodeId: String(episode.r.trackId ?? "") || undefined,
+  };
 }
 
-type ItunesLookup = { results?: { feedUrl?: string; trackName?: string; collectionName?: string; episodeGuid?: string }[] };
+type ItunesLookup = {
+  results?: {
+    feedUrl?: string;
+    trackName?: string;
+    collectionName?: string;
+    episodeGuid?: string;
+    collectionId?: number;
+    trackId?: number;
+  }[];
+};
 type ItunesSearch = ItunesLookup;
 type SpotifyOembed = { title?: string; author_name?: string };
 
@@ -169,14 +250,15 @@ async function fetchRss(feedUrl: string): Promise<RssFeed> {
   }
   const rec = parsed as Record<string, unknown>;
   const rss = rec.rss as Record<string, unknown> | undefined;
-  const channel = (rss?.channel ?? rec.channel ?? (rec.feed as Record<string, unknown> | undefined)) as
-    | Record<string, unknown>
-    | undefined;
+  const channel = (rss?.channel ??
+    rec.channel ??
+    (rec.feed as Record<string, unknown> | undefined)) as Record<string, unknown> | undefined;
   if (!channel) {
     throw new TranscriptError("unsupported", "That URL is not an RSS or Atom feed.");
   }
   const title = textOf(channel.title) || "Podcast";
-  const author = textOf(channel["itunes:author"]) || textOf(channel.author) || textOf(channel["itunes:owner"]);
+  const author =
+    textOf(channel["itunes:author"]) || textOf(channel.author) || textOf(channel["itunes:owner"]);
   const itemsRaw = asArray(channel.item ?? channel.entry).slice(0, MATCH_SCAN_CAP);
   const items = itemsRaw.map(parseRssItem).filter((i) => i.title);
   return { title, author, feedUrl, items };
@@ -185,7 +267,10 @@ async function fetchRss(feedUrl: string): Promise<RssFeed> {
 function parseRssItem(raw: unknown): RssItem {
   const r = (raw ?? {}) as Record<string, unknown>;
   const enclosure = first(r.enclosure);
-  const enclosureRec = (enclosure && typeof enclosure === "object" ? enclosure : {}) as Record<string, unknown>;
+  const enclosureRec = (enclosure && typeof enclosure === "object" ? enclosure : {}) as Record<
+    string,
+    unknown
+  >;
   const duration = textOf(r["itunes:duration"]) || textOf(r.duration);
   const guid = textOf(r.guid) || textOf(r.id);
   const link = hrefOf(r.link) || textOf(r.link);
@@ -254,7 +339,9 @@ function matchItem(
     if (guidHit) return guidHit;
   }
   if (hint.appleEpisodeId) {
-    const appleHit = items.find((i) => i.appleEpisodeId === hint.appleEpisodeId || i.link?.includes(hint.appleEpisodeId!));
+    const appleHit = items.find(
+      (i) => i.appleEpisodeId === hint.appleEpisodeId || i.link?.includes(hint.appleEpisodeId!),
+    );
     if (appleHit) return appleHit;
   }
   if (hint.url) {
@@ -265,12 +352,16 @@ function matchItem(
     const ranked = items
       .map((i) => ({ i, score: scoreTitle(i.title, hint.titleHint!) }))
       .sort((a, b) => b.score - a.score);
-    if (ranked[0] && ranked[0].score >= 0.62) return ranked[0].i;
+    if (ranked[0] && ranked[0].score >= 0.78) return ranked[0].i;
   }
   return undefined;
 }
 
-async function transcriptForItem(feed: RssFeed, item: RssItem, sourceUrl: string): Promise<TranscriptResult> {
+async function transcriptForItem(
+  feed: RssFeed,
+  item: RssItem,
+  sourceUrl: string,
+): Promise<TranscriptResult> {
   const canonicalUrl = item.link || sourceUrl;
   const published = await loadPublishedTranscript(item);
   if (published && !isThin(published, item.durationMs)) {
@@ -286,7 +377,11 @@ async function transcriptForItem(feed: RssFeed, item: RssItem, sourceUrl: string
   }
 
   try {
-    const yt = await searchYoutubeForEpisode(item.title, item.author ?? feed.author, item.durationMs);
+    const yt = await searchYoutubeForEpisode(
+      item.title,
+      item.author ?? feed.author,
+      item.durationMs,
+    );
     if (yt && isGoodEpisodeMatch(item.title, yt.title, item.durationMs, yt.durationMs)) {
       return {
         ...yt,
@@ -298,18 +393,6 @@ async function transcriptForItem(feed: RssFeed, item: RssItem, sourceUrl: string
     }
   } catch {
     /* continue waterfall */
-  }
-
-  if (published && published.length) {
-    return finishTranscript({
-      title: item.title,
-      author: item.author ?? feed.author,
-      durationMs: item.durationMs,
-      source: "file",
-      sourceUrl,
-      canonicalUrl,
-      cues: published,
-    });
   }
 
   if (!item.enclosureUrl) {
@@ -341,7 +424,11 @@ async function loadPublishedTranscript(item: RssItem): Promise<Cue[] | null> {
   }
   for (const t of urls.slice(0, 4)) {
     try {
-      const buf = await fetchBuffer(t.url, { timeoutMs: 20_000, maxBytes: 4 * 1024 * 1024, userAgent: PODCAST_UA });
+      const buf = await fetchBuffer(t.url, {
+        timeoutMs: 20_000,
+        maxBytes: 4 * 1024 * 1024,
+        userAgent: PODCAST_UA,
+      });
       const cues = parseCaptionBytes(buf, t.type ?? t.url);
       if (cues.length) return cues;
     } catch {
@@ -351,8 +438,14 @@ async function loadPublishedTranscript(item: RssItem): Promise<Cue[] | null> {
   return null;
 }
 
-async function scrapeEpisodePageForTranscript(pageUrl: string): Promise<{ url: string; type?: string }[]> {
-  const html = await fetchText(pageUrl, { timeoutMs: 12_000, maxBytes: 1_500_000, userAgent: PODCAST_UA });
+async function scrapeEpisodePageForTranscript(
+  pageUrl: string,
+): Promise<{ url: string; type?: string }[]> {
+  const html = await fetchText(pageUrl, {
+    timeoutMs: 12_000,
+    maxBytes: 1_500_000,
+    userAgent: PODCAST_UA,
+  });
   const out: { url: string; type?: string }[] = [];
   const re = /href=["']([^"']+\.(?:srt|vtt|json|ttml))["']/gi;
   let m: RegExpExecArray | null;
@@ -368,23 +461,31 @@ async function scrapeEpisodePageForTranscript(pageUrl: string): Promise<{ url: s
 }
 
 function collectionFromFeed(feed: RssFeed, parsed: ParsedSourceUrl): CollectionResult {
-  const source =
-    parsed.kind.startsWith("apple") ? "apple" : parsed.kind.startsWith("spotify") ? "spotify" : parsed.kind === "youtube-playlist" ? "youtube" : "rss";
+  const source = parsed.kind.startsWith("apple")
+    ? "apple"
+    : parsed.kind.startsWith("spotify")
+      ? "spotify"
+      : parsed.kind === "youtube-playlist"
+        ? "youtube"
+        : "rss";
   return {
     kind: "collection",
     title: feed.title,
     author: feed.author,
     source,
     sourceUrl: parsed.canonicalUrl,
-    items: feed.items.slice(0, COLLECTION_CAP).map((item) => ({
-      title: item.title,
-      url: item.link || parsed.canonicalUrl,
-      feedUrl: feed.feedUrl,
-      guid: item.guid,
-      durationMs: item.durationMs,
-      publishedAt: item.publishedAt,
-      author: item.author ?? feed.author,
-    } satisfies CollectionItem)),
+    items: feed.items.slice(0, COLLECTION_CAP).map(
+      (item) =>
+        ({
+          title: item.title,
+          url: item.link || parsed.canonicalUrl,
+          feedUrl: feed.feedUrl,
+          guid: item.guid,
+          durationMs: item.durationMs,
+          publishedAt: item.publishedAt,
+          author: item.author ?? feed.author,
+        }) satisfies CollectionItem,
+    ),
   };
 }
 
@@ -497,7 +598,10 @@ function urlsLooselyEqual(a: string, b: string): boolean {
   try {
     const ua = new URL(a);
     const ub = new URL(b);
-    return ua.hostname.replace(/^www\./, "") === ub.hostname.replace(/^www\./, "") && ua.pathname.replace(/\/$/, "") === ub.pathname.replace(/\/$/, "");
+    return (
+      ua.hostname.replace(/^www\./, "") === ub.hostname.replace(/^www\./, "") &&
+      ua.pathname.replace(/\/$/, "") === ub.pathname.replace(/\/$/, "")
+    );
   } catch {
     return normalize(a) === normalize(b);
   }

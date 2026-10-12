@@ -13,31 +13,25 @@ export class TranscriptError extends Error {
 }
 
 const HINTS: Record<FetchErrorCode, string> = {
-  invalid_url:
-    "Paste a YouTube, Apple Podcasts, Spotify, or RSS link.",
+  invalid_url: "Paste a YouTube, Apple Podcasts, Spotify, or RSS link.",
   no_transcript:
     "No captions or published transcript turned up. A show page may need an episode pick first.",
   blocked:
     "The source refused the request. Try again later, or pick a different host for the same episode.",
-  no_audio:
-    "The episode has no downloadable audio enclosure to transcribe.",
-  timeout:
-    "The source took too long. Retry the same URL; bulk jobs will pick up the rest.",
+  no_audio: "The episode has no downloadable audio enclosure to transcribe.",
+  timeout: "The source took too long. Retry the same URL; bulk jobs will pick up the rest.",
   not_found: "Nothing lives at that URL anymore.",
   unsupported: "That host is not a YouTube, podcast, or RSS source.",
   rate_limited: "Slow down a bit and retry. The queue will keep your other jobs.",
-  stt_unavailable:
-    "Speech-to-text is the last resort and is not available in this environment.",
+  stt_unavailable: "Speech-to-text is the last resort and is not available in this environment.",
+  provider_unavailable:
+    "A transcript service is not configured or has reached its available usage limit.",
   too_large: "Audio is over the 2 hour / 50 MB cap used for speech-to-text.",
   network: "A network hop failed. Check the URL and try again.",
   unknown: "Something unexpected failed while fetching the transcript.",
 };
 
-export function errorResult(
-  code: FetchErrorCode,
-  message: string,
-  hint?: string,
-): ErrorResult {
+export function errorResult(code: FetchErrorCode, message: string, hint?: string): ErrorResult {
   return {
     kind: "error",
     code,

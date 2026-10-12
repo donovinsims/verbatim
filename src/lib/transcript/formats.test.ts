@@ -37,7 +37,7 @@ describe("serializeTranscript", () => {
 
   it("emits JSON that round-trips cues", () => {
     const json = JSON.parse(serializeTranscript(sample, "json")) as TranscriptResult;
-    expect(json.cues).toHaveLength(2);
+    expect(json.cues).toEqual(sample.cues);
     expect(json.kind).toBe("transcript");
   });
 });

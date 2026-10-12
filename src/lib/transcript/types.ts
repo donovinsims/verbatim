@@ -5,12 +5,7 @@ export type Cue = {
   speaker?: string;
 };
 
-export type TranscriptSource =
-  | "youtube"
-  | "podcast"
-  | "rss"
-  | "stt"
-  | "file";
+export type TranscriptSource = "youtube" | "podcast" | "rss" | "stt" | "file";
 
 export type CollectionSource = "youtube" | "apple" | "spotify" | "rss";
 
@@ -60,6 +55,7 @@ export type FetchErrorCode =
   | "unsupported"
   | "rate_limited"
   | "stt_unavailable"
+  | "provider_unavailable"
   | "too_large"
   | "network"
   | "unknown";
@@ -107,13 +103,7 @@ export type ParsedSourceUrl = {
   spotifyId?: string;
 };
 
-export type JobStatus =
-  | "queued"
-  | "running"
-  | "done"
-  | "error"
-  | "collection"
-  | "paused";
+export type JobStatus = "queued" | "running" | "done" | "error" | "collection" | "paused";
 
 export type Job = {
   id: string;
