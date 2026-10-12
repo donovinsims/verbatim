@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TranscriptError } from "./errors";
 import { resolveTranscript } from "./resolve";
+import { shouldUseYoutubeProviderFallback } from "./youtube";
 
 const YT_PLAYER = {
   videoDetails: {
@@ -30,6 +32,24 @@ describe("resolveTranscript", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+
+  it("lets providers check ambiguous playback errors but preserves definitive restrictions", () => {
+    expect(
+      shouldUseYoutubeProviderFallback(
+        new TranscriptError("blocked", "YouTube blocked playback (This video is unavailable)."),
+      ),
+    ).toBe(true);
+    expect(
+      shouldUseYoutubeProviderFallback(
+        new TranscriptError("blocked", "YouTube blocked playback (This is a private video)."),
+      ),
+    ).toBe(false);
+    expect(
+      shouldUseYoutubeProviderFallback(
+        new TranscriptError("blocked", "YouTube blocked playback (Sign in to confirm your age)."),
+      ),
+    ).toBe(false);
   });
 
   it("returns invalid_url for empty input", async () => {

@@ -97,7 +97,7 @@ export async function fetchVideoTranscriptWithFallback(
   try {
     return await fetchVideoTranscript(videoId, sourceUrl);
   } catch (primaryError) {
-    if (!shouldUseTranscriptApiFallback(primaryError)) throw primaryError;
+    if (!shouldUseYoutubeProviderFallback(primaryError)) throw primaryError;
     const failures: unknown[] = [primaryError];
 
     try {
@@ -422,6 +422,12 @@ function shouldUseTranscriptApiFallback(err: unknown): boolean {
     err instanceof TranscriptError &&
     ["no_transcript", "network", "timeout", "rate_limited"].includes(err.code)
   );
+}
+
+export function shouldUseYoutubeProviderFallback(err: unknown): boolean {
+  if (shouldUseTranscriptApiFallback(err)) return true;
+  if (!(err instanceof TranscriptError) || err.code !== "blocked") return false;
+  return /^YouTube blocked playback \(This video is unavailable\.?\)\.?$/i.test(err.message);
 }
 
 function hasUsablePlayer(player: PlayerResponse): boolean {
