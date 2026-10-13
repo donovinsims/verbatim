@@ -97,6 +97,7 @@ export async function fetchVideoTranscriptWithFallback(
   try {
     return await fetchVideoTranscript(videoId, sourceUrl);
   } catch (primaryError) {
+    logPreviewFallback("innertube", "failed", primaryError);
     if (!shouldUseYoutubeProviderFallback(primaryError)) throw primaryError;
     const failures: unknown[] = [primaryError];
 
@@ -111,14 +112,18 @@ export async function fetchVideoTranscriptWithFallback(
       try {
         return await fetchTranscriptApi(videoId, sourceUrl);
       } catch (err) {
+        logPreviewFallback("transcriptapi", "failed", err);
         if (!shouldUseTranscriptApiFallback(err)) throw err;
         failures.push(err);
       }
+    } else {
+      logPreviewFallback("transcriptapi", "skipped_no_key");
     }
 
     try {
       return await fetchYoutube2TextTranscript(videoId, sourceUrl);
     } catch (err) {
+      logPreviewFallback("youtube2text", "failed", err);
       if (!shouldUseTranscriptApiFallback(err)) throw err;
       failures.push(err);
     }
@@ -156,21 +161,32 @@ async function fetchInvidiousTranscript(
       );
       const tracks = payload.captions ?? [];
       const track = pickInvidiousCaption(tracks);
-      if (!track?.url) continue;
+      if (!track?.url) {
+        logPreviewFallback(host, "no_caption_track", undefined, { trackCount: tracks.length });
+        continue;
+      }
       const response = await fetchResponse(new URL(track.url, host).toString(), {
         timeoutMs: 15_000,
         userAgent: BROWSER_UA,
       });
-      if (!response.ok) continue;
+      if (!response.ok) {
+        logPreviewFallback(host, "caption_http_error", undefined, { status: response.status });
+        continue;
+      }
       const bytes = await readLimited(response, 8 * 1024 * 1024);
       const cues = parseCaptionBytes(bytes, response.headers.get("content-type") ?? track.mimeType);
-      if (!cues.length) continue;
+      if (!cues.length) {
+        logPreviewFallback(host, "empty_caption_cues");
+        continue;
+      }
       const text = flattenCues(cues);
+      logPreviewFallback(host, "success", undefined, { cueCount: cues.length });
       return makeProviderTranscript(videoId, sourceUrl, cues, text, {
         title: `YouTube ${videoId}`,
         language: track.languageCode,
       });
     } catch (err) {
+      logPreviewFallback(host, "failed", err);
       // Public instances vary in uptime and may reject an endpoint independently.
       // Keep trying the remaining instances before declaring this source unavailable.
       if (err instanceof TranscriptError && err.code === "too_large") throw err;
@@ -209,15 +225,18 @@ async function fetchYoutube2TextTranscript(
     accept: "application/json",
   });
   if (response.status === 404 || response.status === 422) {
+    logPreviewFallback("youtube2text", "no_transcript", undefined, { status: response.status });
     throw new TranscriptError("no_transcript", "The hosted transcript service found no captions.");
   }
   if (response.status === 429) {
+    logPreviewFallback("youtube2text", "rate_limited", undefined, { status: response.status });
     throw new TranscriptError(
       "rate_limited",
       "The hosted transcript service is busy. Try again later.",
     );
   }
   if (!response.ok) {
+    logPreviewFallback("youtube2text", "http_error", undefined, { status: response.status });
     throw new TranscriptError(
       "network",
       `The hosted transcript service returned HTTP ${response.status}.`,
@@ -228,6 +247,12 @@ async function fetchYoutube2TextTranscript(
     error?: { code?: unknown; message?: unknown };
   };
   if (payload.error) {
+    logPreviewFallback("youtube2text", "provider_error", undefined, {
+      errorCode:
+        typeof payload.error.code === "string" && /^[A-Z0-9_]{1,64}$/.test(payload.error.code)
+          ? payload.error.code
+          : "other",
+    });
     if (payload.error.code === "TRANSCRIPT_UNAVAILABLE") {
       throw new TranscriptError(
         "no_transcript",
@@ -240,12 +265,15 @@ async function fetchYoutube2TextTranscript(
     );
   }
   const text = typeof payload.result?.content === "string" ? payload.result.content.trim() : "";
-  if (!text)
+  if (!text) {
+    logPreviewFallback("youtube2text", "empty_response");
     throw new TranscriptError(
       "no_transcript",
       "The hosted transcript service returned no transcript text.",
     );
+  }
   const cues: Cue[] = [{ startMs: 0, endMs: 1000, text }];
+  logPreviewFallback("youtube2text", "success", undefined, { characterCount: text.length });
   return makeProviderTranscript(videoId, sourceUrl, cues, text, {
     title:
       typeof payload.result?.title === "string" && payload.result.title.trim()
@@ -262,11 +290,15 @@ async function getYoutube2TextDemoKey(): Promise<string> {
     timeoutMs: 12_000,
     accept: "application/json",
   });
-  if (!response.ok)
+  if (!response.ok) {
+    logPreviewFallback("youtube2text_demo_key", "http_error", undefined, {
+      status: response.status,
+    });
     throw new TranscriptError(
       "provider_unavailable",
       "The hosted transcript service is unavailable.",
     );
+  }
   const payload = (await response.json()) as { apiKey?: unknown; key?: unknown };
   const key =
     typeof payload.apiKey === "string"
@@ -274,13 +306,35 @@ async function getYoutube2TextDemoKey(): Promise<string> {
       : typeof payload.key === "string"
         ? payload.key
         : "";
-  if (!key.trim())
+  if (!key.trim()) {
+    logPreviewFallback("youtube2text_demo_key", "missing_key");
     throw new TranscriptError(
       "provider_unavailable",
       "The hosted transcript service did not provide an access key.",
     );
+  }
   youtube2textDemoKey = { value: key, expiresAt: Date.now() + 30 * 60_000 };
+  logPreviewFallback("youtube2text_demo_key", "success");
   return key;
+}
+
+function logPreviewFallback(
+  provider: string,
+  outcome: string,
+  err?: unknown,
+  details: Record<string, string | number> = {},
+): void {
+  if (process.env.VERCEL_ENV !== "preview") return;
+  const errorCode = err instanceof TranscriptError ? err.code : undefined;
+  const safeMessage = err instanceof Error ? err.message : "";
+  const statusMatch = safeMessage.match(/(?:HTTP |returned |request \()(\d{3})/i);
+  console.warn("[verbatim] transcript_fallback", {
+    provider,
+    outcome,
+    ...(errorCode ? { errorCode } : {}),
+    ...(statusMatch ? { status: Number(statusMatch[1]) } : {}),
+    ...details,
+  });
 }
 
 function makeProviderTranscript(
