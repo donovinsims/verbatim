@@ -427,6 +427,7 @@ function shouldUseTranscriptApiFallback(err: unknown): boolean {
 export function shouldUseYoutubeProviderFallback(err: unknown): boolean {
   if (shouldUseTranscriptApiFallback(err)) return true;
   if (!(err instanceof TranscriptError) || err.code !== "blocked") return false;
+  if (err.message.includes("Sign in to confirm you’re not a bot")) return true;
   return /^YouTube blocked playback \(This video is unavailable\.?\)\.?$/i.test(err.message);
 }
 

@@ -42,6 +42,14 @@ describe("resolveTranscript", () => {
     ).toBe(true);
     expect(
       shouldUseYoutubeProviderFallback(
+        new TranscriptError(
+          "blocked",
+          "YouTube blocked playback (Sign in to confirm you’re not a bot).",
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      shouldUseYoutubeProviderFallback(
         new TranscriptError("blocked", "YouTube blocked playback (This is a private video)."),
       ),
     ).toBe(false);
@@ -414,20 +422,7 @@ describe("resolveTranscript", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("itunes.apple.com/lookup?id=1000402428920")) {
-        return new Response(
-          JSON.stringify({
-            results: [
-              {
-                trackName: "Carna Botnet",
-                trackId: 1000402428920,
-                collectionId: 1296350485,
-                episodeGuid: "ep-13",
-                feedUrl: "https://feed.test/rss",
-              },
-            ],
-          }),
-          { status: 200 },
-        );
+        return new Response(JSON.stringify({ results: [] }), { status: 200 });
       }
       if (url.includes("open.spotify.com/oembed")) {
         return new Response(

@@ -122,9 +122,10 @@ async function resolveApple(parsed: ParsedSourceUrl): Promise<RssFeed> {
   );
   const row = data.results?.[0];
   let feedUrl = row?.feedUrl;
-  if (!feedUrl && row?.collectionId) {
+  const collectionId = row?.collectionId ?? parsed.appleShowId;
+  if (!feedUrl && collectionId) {
     const show = await fetchJson<ItunesLookup>(
-      `https://itunes.apple.com/lookup?id=${encodeURIComponent(row.collectionId)}&entity=podcast`,
+      `https://itunes.apple.com/lookup?id=${encodeURIComponent(collectionId)}&entity=podcast`,
       { timeoutMs: 15_000, userAgent: PODCAST_UA },
     );
     feedUrl = show.results?.find((result) => result.feedUrl)?.feedUrl;
@@ -536,11 +537,14 @@ function looksLikeShowOnly(input: TranscriptInput, feed: RssFeed): boolean {
 }
 
 function titleHintFromSource(parsed: ParsedSourceUrl, input: TranscriptInput): string | undefined {
-  if (parsed.kind === "spotify-episode" || parsed.kind === "apple-episode") return undefined;
+  if (parsed.kind === "spotify-episode") return undefined;
   try {
     const u = new URL(input.url);
-    const last = u.pathname.split("/").filter(Boolean).at(-1);
-    return last?.replace(/[-_]/g, " ");
+    const parts = u.pathname.split("/").filter(Boolean);
+    const appleIdIndex = parts.findIndex((part) => /^id\d+$/i.test(part));
+    const slug =
+      parsed.kind === "apple-episode" && appleIdIndex > 0 ? parts[appleIdIndex - 1] : parts.at(-1);
+    return slug?.replace(/[-_]/g, " ");
   } catch {
     return undefined;
   }
