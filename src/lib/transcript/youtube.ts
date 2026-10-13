@@ -1,9 +1,9 @@
-import { fetchJson, fetchText, HttpError } from "./http";
-import { parseDurationSeconds } from "./match";
-import { cuesToText, parseCaptionPayload, wordCount } from "./parse-caption";
-import { youtubeWatchUrl } from "./parse-url";
-import { fetchTranscriptApi } from "./transcript-api";
-import type { CollectionResult, Cue, TranscriptResult } from "./types";
+import { fetchJson, fetchText, HttpError } from "./http.ts";
+import { parseDurationSeconds } from "./match.ts";
+import { cuesToText, parseCaptionPayload, wordCount } from "./parse-caption.ts";
+import { youtubeWatchUrl } from "./parse-url.ts";
+import { fetchTranscriptApi } from "./transcript-api.ts";
+import type { CollectionResult, Cue, TranscriptResult } from "./types.ts";
 
 const ANDROID_VERSION = "21.26.364";
 const WEB_VERSION = "2.20260910.01.00";
@@ -212,11 +212,18 @@ async function innertubePlayer(
   return JSON.parse(res.text) as PlayerResponse;
 }
 
-function playabilityCode(status?: string, reason?: string): "ok" | "blocked" | "not_found" {
+export function classifyYoutubePlayability(
+  status?: string,
+  reason?: string,
+): "ok" | "blocked" | "not_found" | "auth_required" {
   if (!status || status === "OK") return "ok";
   const text = `${status} ${reason ?? ""}`;
   if (/private|has been removed|doesn't exist|does not exist|deleted|terminated|copyright/i.test(text)) {
     return "not_found";
+  }
+  if (/not a bot/i.test(reason ?? "")) return "blocked";
+  if (/age[- ]?restrict|confirm your age|sign in|log in|login|required|members? only|join this channel|premium|subscription|account access/i.test(text)) {
+    return "auth_required";
   }
   return "blocked";
 }
@@ -224,9 +231,14 @@ function playabilityCode(status?: string, reason?: string): "ok" | "blocked" | "
 async function fromPlayer(videoId: string, player: PlayerResponse, sourceUrl: string): Promise<TranscriptResult> {
   const status = player.playabilityStatus?.status;
   const reason = player.playabilityStatus?.reason ?? status;
-  const code = playabilityCode(status, reason);
+  const code = classifyYoutubePlayability(status, reason);
   if (code === "not_found") {
     throw Object.assign(new Error(reason || "Video is unplayable"), { code: "not_found" as const });
+  }
+  if (code === "auth_required") {
+    throw Object.assign(new Error(reason || "This video requires YouTube sign-in to access."), {
+      code: "auth_required" as const,
+    });
   }
   if (code === "blocked") {
     throw Object.assign(new Error(reason || "YouTube blocked the request"), { code: "blocked" as const });
@@ -306,7 +318,7 @@ async function fromInnertube(videoId: string, sourceUrl: string): Promise<Transc
         blocked = err instanceof Error ? err : new Error(String(err));
         continue;
       }
-      if (code === "not_found") throw err;
+      if (code === "not_found" || code === "auth_required") throw err;
       blocked = err instanceof Error ? err : new Error(String(err));
     }
   }
@@ -476,7 +488,7 @@ export async function fetchYoutubeTranscript(videoId: string, sourceUrl: string)
     return await fromInnertube(videoId, sourceUrl);
   } catch (err) {
     const code = (err as { code?: string }).code;
-    if (code === "no_transcript" || code === "not_found") throw err;
+    if (code === "no_transcript" || code === "not_found" || code === "auth_required") throw err;
     errors.push(err instanceof Error ? err.message : String(err));
   }
 
