@@ -35,7 +35,7 @@ export const Route = createRootRoute({
       <head>
         <HeadContent />
       </head>
-      <body className="bg-ink text-fg">
+      <body className="bg-neutral-950 text-neutral-50">
         <PreviewHostBridge />
         <AuthProvider>
           <Outlet />

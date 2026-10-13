@@ -1,22 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Check,
-  ChevronDown,
   ClipboardCopy,
   Download,
-  History,
+  FileText,
+  ListTodo,
   LoaderCircle,
   Pause,
   Play,
   Search,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Dropdown, DropdownItem } from "@/components/ui/dropdown";
+import {
+  DashboardButton,
+  DashboardMenu,
+  DashboardMenuContent,
+  DashboardMenuItem,
+  DashboardMenuTrigger,
+  DashboardShell,
+} from "@/components/block/dashboard-shell";
 import { Input, TextArea } from "@/components/ui/input";
 import { Scroll } from "@/components/ui/scroll";
-import { SwipeRow } from "@/components/swipe-row";
 import { fetchTranscriptFn } from "@/lib/transcript.functions";
 import { copyText, exportTranscript, exportTranscriptsZip } from "@/lib/transcript/client-export";
 import { SAMPLE_LINKS } from "@/lib/transcript/examples";
@@ -44,10 +50,12 @@ import type {
 } from "@/lib/transcript/types";
 
 type Mode = "single" | "bulk";
+type View = "workspace" | "queue" | "history";
 
 export function VerbatimApp() {
   const [draft, setDraft] = useState("");
   const [mode, setMode] = useState<Mode>("single");
+  const [view, setView] = useState<View>("workspace");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -79,8 +87,12 @@ export function VerbatimApp() {
           setNotice("That URL is already in the queue.");
           return current;
         }
-        const room = MAX_BULK - current.filter((j) => j.status === "queued" || j.status === "running").length;
-        const capped = unique.slice(0, Math.max(0, mode === "bulk" ? Math.min(room, MAX_BULK) : unique.length));
+        const room =
+          MAX_BULK - current.filter((j) => j.status === "queued" || j.status === "running").length;
+        const capped = unique.slice(
+          0,
+          Math.max(0, mode === "bulk" ? Math.min(room, MAX_BULK) : unique.length),
+        );
         if (capped.length < unique.length) {
           setNotice(`Bulk is capped at ${MAX_BULK} jobs.`);
         }
@@ -130,10 +142,21 @@ export function VerbatimApp() {
           curr.map((j) => {
             if (j.id !== job.id) return j;
             if (result.kind === "transcript") {
-              return { ...j, status: "done", transcript: result, error: undefined, hint: undefined };
+              return {
+                ...j,
+                status: "done",
+                transcript: result,
+                error: undefined,
+                hint: undefined,
+              };
             }
             if (result.kind === "collection") {
-              return { ...j, status: "collection", collection: result, label: result.title || j.label };
+              return {
+                ...j,
+                status: "collection",
+                collection: result,
+                label: result.title || j.label,
+              };
             }
             return {
               ...j,
@@ -145,7 +168,9 @@ export function VerbatimApp() {
           }),
         );
         if (result.kind === "transcript") {
-          setHistory((h) => pushHistory(h, historyFromTranscript(result, job.url), window.localStorage));
+          setHistory((h) =>
+            pushHistory(h, historyFromTranscript(result, job.url), window.localStorage),
+          );
         }
         setSelectedId((id) => id ?? job.id);
       } catch (err) {
@@ -181,177 +206,319 @@ export function VerbatimApp() {
   }
 
   const finished = jobs.filter((j) => j.status === "done" && j.transcript);
+  const running = jobs.filter((job) => job.status === "running").length;
+  const queued = jobs.filter((job) => job.status === "queued").length;
+  const collections = jobs.filter((job) => job.status === "collection").length;
+  const failed = jobs.filter((job) => job.status === "error").length;
+  const status = paused ? "Paused" : running > 0 ? "Processing" : "Ready";
+  const statusTone = paused || running > 0 ? "warning" : "success";
 
   return (
-    <div className="flex min-h-dvh flex-col bg-ink text-fg">
-      <header className="flex items-center justify-between gap-3 border-b border-fg/8 px-4 py-3 md:px-6">
-        <div className="flex items-baseline gap-3">
-          <h1 className="font-serif text-2xl tracking-tight text-fg">Verbatim</h1>
-          <p className="hidden text-sm text-muted sm:block">The full take, not a summary.</p>
-        </div>
-        <div className="flex items-center gap-1">
-          {finished.length >= 2 ? (
-            <Button
-              variant="ghost"
+    <main className="h-dvh bg-(--obsidian-dashboard-shell-background)">
+      <DashboardShell
+        className="dark"
+        brand={{
+          name: "Verbatim",
+          description: "The full take, not a summary.",
+          logo: <FileText aria-hidden className="size-5" />,
+        }}
+        navigation={[
+          {
+            id: "workspace",
+            title: "Workspace",
+            items: [{ id: "workspace", label: "Transcript", icon: FileText }],
+          },
+          {
+            id: "queue",
+            title: "Queue",
+            items: [{ id: "queue", label: "All jobs", icon: ListTodo, count: jobs.length }],
+          },
+          {
+            id: "history",
+            title: "History",
+            items: [
+              { id: "history", label: "Saved transcripts", icon: Upload, count: history.length },
+            ],
+          },
+        ]}
+        activeItemId={view}
+        onActiveItemChange={(id) => setView(id as View)}
+        title={view === "workspace" ? "Workspace" : view === "queue" ? "Queue" : "History"}
+        status={status}
+        statusTone={statusTone}
+        tabs={
+          view === "workspace"
+            ? [
+                { value: "single", label: "Single" },
+                { value: "bulk", label: "Bulk" },
+              ]
+            : undefined
+        }
+        tab={view === "workspace" ? mode : undefined}
+        onTabChange={(next) => setMode(next as Mode)}
+        headerActions={
+          finished.length >= 2 ? (
+            <DashboardButton
+              variant="secondary"
               size="sm"
-              onClick={() => void exportTranscriptsZip(finished.map((j) => j.transcript!), "txt", { timestamps: showTimestamps })}
+              onClick={() =>
+                void exportTranscriptsZip(
+                  finished.map((job) => job.transcript!),
+                  "txt",
+                  { timestamps: showTimestamps },
+                )
+              }
             >
-              <Download className="size-4" />
+              <Download aria-hidden />
               Zip {finished.length}
-            </Button>
-          ) : null}
-          <Dropdown
-            label={
-              <>
-                <History className="size-4" />
-                Recents
-                <ChevronDown className="size-3.5 opacity-60" />
-              </>
-            }
-          >
-            {history.length === 0 ? (
-              <p className="px-3 py-2 text-sm text-muted">Nothing saved yet. Finished transcripts stay in this browser.</p>
-            ) : (
-              history.map((item) => (
-                <DropdownItem
-                  key={item.canonicalUrl}
-                  onSelect={() => enqueue([{ url: item.url, label: item.title }])}
-                >
-                  <span className="flex min-w-0 flex-col">
-                    <span className="truncate">{item.title}</span>
-                    <span className="text-xs text-muted">
-                      {item.author ? `${item.author} · ` : ""}
-                      {item.wordCount ? `${item.wordCount.toLocaleString()} words` : "re-queue"}
-                    </span>
-                  </span>
-                </DropdownItem>
-              ))
-            )}
-          </Dropdown>
-        </div>
-      </header>
-
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 md:grid-cols-[minmax(280px,360px)_1fr] md:p-6">
-        <section className="flex flex-col rounded-2xl bg-ink-2 p-4 shadow-card">
-          <div className="mb-3 flex rounded-lg bg-fg/6 p-1">
-            {(["single", "bulk"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                className={`min-h-10 flex-1 rounded-md text-sm capitalize ${
-                  mode === m ? "bg-ink text-fg" : "text-muted hover:text-fg"
-                }`}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-          <label className="mb-1 text-xs uppercase tracking-wide text-muted" htmlFor="verbatim-url">
-            {mode === "bulk" ? "URLs (one per line, max 20)" : "URL"}
-          </label>
-          <TextArea
-            id="verbatim-url"
-            value={draft}
-            rows={mode === "bulk" ? 6 : 3}
-            placeholder={
-              mode === "bulk"
-                ? "https://youtube.com/watch?v=...\nhttps://podcasts.apple.com/..."
-                : "Paste a YouTube, Apple Podcasts, Spotify, or RSS link"
-            }
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                submitDraft();
-              }
-            }}
-          />
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button type="button" onClick={submitDraft} className="flex-1">
-              Transcribe
-            </Button>
-            <Button type="button" variant="ghost" onClick={() => setPaused((p) => !p)} aria-pressed={paused}>
-              {paused ? <Play className="size-4" /> : <Pause className="size-4" />}
-              {paused ? "Resume" : "Pause"}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setJobs((curr) => curr.filter((j) => j.status === "running"));
-              }}
-              aria-label="Clear finished jobs"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {SAMPLE_LINKS.map((sample) => (
-              <Button
-                key={sample.id}
-                type="button"
-                variant="chip"
+            </DashboardButton>
+          ) : undefined
+        }
+        toolbarActions={
+          view === "workspace" ? (
+            <>
+              <DashboardButton
+                variant="secondary"
                 size="sm"
-                onClick={() => {
-                  setDraft(sample.url);
-                  enqueue([{ url: sample.url, label: sample.label }]);
-                }}
+                onClick={() => setPaused((value) => !value)}
+                aria-pressed={paused}
               >
-                {sample.label}
-              </Button>
-            ))}
-          </div>
-          {notice ? <p className="mt-3 text-sm text-accent">{notice}</p> : null}
-          <h2 className="mt-5 text-xs uppercase tracking-wide text-muted">Queue</h2>
-          <Scroll className="mt-2 max-h-[42vh] md:max-h-[calc(100dvh-24rem)]">
-            {jobs.length === 0 ? (
-              <p className="px-1 py-3 text-sm text-muted">Jobs land here. One at a time in Single, two at a time in Bulk.</p>
-            ) : (
-              <ul className="flex flex-col gap-1">
-                {jobs.map((job) => (
-                  <li key={job.id}>
-                    <SwipeRow
-                      disabled={job.status === "running"}
-                      onDismiss={() => dismissJob(job.id)}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setSelectedId(job.id)}
-                        className={`flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm ${
-                          selected?.id === job.id ? "bg-fg/10 text-fg" : "text-fg/80 hover:bg-fg/6"
-                        }`}
-                      >
-                        <StatusDot status={job.status} />
-                        <span className="min-w-0 flex-1 truncate">{job.label}</span>
-                      </button>
-                    </SwipeRow>
-                  </li>
+                {paused ? <Play aria-hidden /> : <Pause aria-hidden />}
+                {paused ? "Resume" : "Pause"}
+              </DashboardButton>
+              <DashboardButton
+                variant="ghost"
+                size="icon"
+                onClick={() =>
+                  setJobs((current) => current.filter((job) => job.status === "running"))
+                }
+                aria-label="Clear finished jobs"
+              >
+                <Trash2 aria-hidden />
+              </DashboardButton>
+            </>
+          ) : undefined
+        }
+      >
+        {view === "workspace" ? (
+          <div className="grid min-h-full grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(280px,360px)_minmax(0,1fr)] lg:p-6">
+            <section className="rounded-lg border border-(--obsidian-dashboard-shell-border) bg-(--obsidian-dashboard-shell-panel) p-4">
+              <label
+                className="mb-2 block text-xs font-medium uppercase tracking-[1px] text-(--obsidian-dashboard-shell-text-subtle)"
+                htmlFor="verbatim-url"
+              >
+                {mode === "bulk" ? `URLs (one per line, max ${MAX_BULK})` : "URL"}
+              </label>
+              <TextArea
+                id="verbatim-url"
+                value={draft}
+                rows={mode === "bulk" ? 6 : 3}
+                placeholder={
+                  mode === "bulk"
+                    ? "https://youtube.com/watch?v=...\nhttps://podcasts.apple.com/..."
+                    : "Paste a YouTube, Apple Podcasts, Spotify, or RSS link"
+                }
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    submitDraft();
+                  }
+                }}
+              />
+              <DashboardButton
+                variant="primary"
+                size="md"
+                className="mt-3 w-full"
+                onClick={submitDraft}
+              >
+                Transcribe
+              </DashboardButton>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {SAMPLE_LINKS.map((sample) => (
+                  <DashboardButton
+                    key={sample.id}
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setDraft(sample.url);
+                      enqueue([{ url: sample.url, label: sample.label }]);
+                    }}
+                  >
+                    {sample.label}
+                  </DashboardButton>
                 ))}
-              </ul>
-            )}
-          </Scroll>
-        </section>
-
-        <section className="flex min-h-[70vh] flex-col overflow-hidden rounded-2xl bg-paper text-paper-ink shadow-paper md:min-h-[calc(100dvh-7rem)]">
-          <PaperPane
-            job={selected}
-            search={search}
-            onSearch={setSearch}
-            showTimestamps={showTimestamps}
-            onToggleTimestamps={() => setShowTimestamps((v) => !v)}
-            copied={copied}
-            onCopy={async (text) => {
-              const ok = await copyText(text);
-              if (ok) {
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
-              }
-            }}
-            onPick={pickEpisode}
+              </div>
+              {notice ? (
+                <p role="status" className="mt-4 text-sm text-(--obsidian-dashboard-shell-warning)">
+                  {notice}
+                </p>
+              ) : null}
+              <p className="mt-5 text-xs leading-relaxed text-(--obsidian-dashboard-shell-text-subtle)">
+                One job at a time in Single; up to two at a time in Bulk.
+              </p>
+            </section>
+            <section className="flex min-h-[540px] min-w-0 flex-col overflow-hidden rounded-lg border border-(--obsidian-dashboard-shell-border) bg-(--obsidian-dashboard-shell-control)">
+              <PaperPane
+                job={selected}
+                search={search}
+                onSearch={setSearch}
+                showTimestamps={showTimestamps}
+                onToggleTimestamps={() => setShowTimestamps((value) => !value)}
+                copied={copied}
+                onCopy={async (text) => {
+                  if (await copyText(text)) {
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1500);
+                  }
+                }}
+                onPick={pickEpisode}
+              />
+            </section>
+          </div>
+        ) : view === "queue" ? (
+          <QueueView
+            jobs={jobs}
+            selectedId={selected?.id}
+            queued={queued}
+            running={running}
+            collections={collections}
+            failed={failed}
+            onSelect={setSelectedId}
+            onDismiss={dismissJob}
           />
-        </section>
+        ) : (
+          <HistoryView
+            history={history}
+            onRequeue={(item) => enqueue([{ url: item.url, label: item.title }])}
+          />
+        )}
+      </DashboardShell>
+    </main>
+  );
+}
+
+function QueueView({
+  jobs,
+  selectedId,
+  queued,
+  running,
+  collections,
+  failed,
+  onSelect,
+  onDismiss,
+}: {
+  jobs: Job[];
+  selectedId?: string;
+  queued: number;
+  running: number;
+  collections: number;
+  failed: number;
+  onSelect: (id: string) => void;
+  onDismiss: (id: string) => void;
+}) {
+  const summary = [
+    { label: "Queued", value: queued },
+    { label: "Running", value: running },
+    { label: "Completed", value: jobs.filter((job) => job.status === "done").length },
+    { label: "Collections", value: collections },
+    { label: "Failed", value: failed },
+  ];
+  return (
+    <div className="mx-auto max-w-5xl p-4 lg:p-6">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {summary.map((item) => (
+          <div
+            key={item.label}
+            className="rounded-lg border border-(--obsidian-dashboard-shell-border) bg-(--obsidian-dashboard-shell-panel) p-3"
+          >
+            <p className="text-xs text-(--obsidian-dashboard-shell-text-subtle)">{item.label}</p>
+            <p className="mt-1 text-xl font-medium tabular-nums">{item.value}</p>
+          </div>
+        ))}
       </div>
+      <section className="mt-4 overflow-hidden rounded-lg border border-(--obsidian-dashboard-shell-border)">
+        {jobs.length === 0 ? (
+          <p className="p-6 text-sm text-(--obsidian-dashboard-shell-text-muted)">
+            Jobs land here after you submit a URL.
+          </p>
+        ) : (
+          <ul>
+            {jobs.map((job) => (
+              <li
+                key={job.id}
+                className="flex min-h-14 items-center gap-3 border-b border-(--obsidian-dashboard-shell-border) px-3 last:border-b-0"
+              >
+                <StatusDot status={job.status} />
+                <DashboardButton
+                  variant="ghost"
+                  size="sm"
+                  className="min-w-0 flex-1 justify-start truncate"
+                  onClick={() => onSelect(job.id)}
+                  aria-pressed={selectedId === job.id}
+                >
+                  {job.label}
+                </DashboardButton>
+                <span className="text-xs capitalize text-(--obsidian-dashboard-shell-text-subtle)">
+                  {job.status}
+                </span>
+                {job.status !== "running" ? (
+                  <DashboardButton
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Dismiss ${job.label}`}
+                    onClick={() => onDismiss(job.id)}
+                  >
+                    <Trash2 aria-hidden />
+                  </DashboardButton>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function HistoryView({
+  history,
+  onRequeue,
+}: {
+  history: HistoryItem[];
+  onRequeue: (item: HistoryItem) => void;
+}) {
+  return (
+    <div className="mx-auto max-w-5xl p-4 lg:p-6">
+      <section className="overflow-hidden rounded-lg border border-(--obsidian-dashboard-shell-border)">
+        {history.length === 0 ? (
+          <p className="p-6 text-sm text-(--obsidian-dashboard-shell-text-muted)">
+            Nothing saved yet. Finished transcripts stay in this browser.
+          </p>
+        ) : (
+          <ul>
+            {history.map((item) => (
+              <li
+                key={item.canonicalUrl}
+                className="flex min-h-16 items-center gap-4 border-b border-(--obsidian-dashboard-shell-border) p-3 last:border-b-0"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{item.title}</p>
+                  <p className="mt-1 text-xs text-(--obsidian-dashboard-shell-text-subtle)">
+                    {item.author ? `${item.author} · ` : ""}
+                    {item.wordCount
+                      ? `${item.wordCount.toLocaleString()} words`
+                      : "Saved transcript"}
+                  </p>
+                </div>
+                <DashboardButton variant="secondary" size="sm" onClick={() => onRequeue(item)}>
+                  Re-queue
+                </DashboardButton>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }
@@ -400,9 +567,10 @@ function PaperPane({
 function EmptyPane() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 py-16 text-center">
-      <p className="font-serif text-3xl text-balance text-paper-ink">The full take, not a summary.</p>
-      <p className="mt-3 max-w-md text-pretty text-sm text-paper-muted">
-        Paste a YouTube or podcast URL. Captions, published transcripts, and speech-to-text as a last resort.
+      <p className="text-2xl font-medium text-balance">The full take, not a summary.</p>
+      <p className="mt-3 max-w-md text-pretty text-sm text-(--obsidian-dashboard-shell-text-muted)">
+        Paste a YouTube or podcast URL. Captions, published transcripts, and speech-to-text as a
+        last resort.
       </p>
     </div>
   );
@@ -411,7 +579,7 @@ function EmptyPane() {
 function LoadingPane({ label }: { label: string }) {
   return (
     <div className="flex flex-1 flex-col px-6 py-8 md:px-10">
-      <div className="mb-6 flex items-center gap-2 text-sm text-paper-muted">
+      <div className="mb-6 flex items-center gap-2 text-sm text-(--obsidian-dashboard-shell-text-muted)">
         <LoaderCircle className="size-4 animate-spin" />
         Fetching {label}
       </div>
@@ -419,7 +587,7 @@ function LoadingPane({ label }: { label: string }) {
         {Array.from({ length: 8 }).map((_, i) => (
           <div
             key={i}
-            className="h-3 rounded-full bg-paper-ink/8"
+            className="h-3 rounded-full bg-(--obsidian-dashboard-shell-muted)"
             style={{ width: `${70 + ((i * 17) % 25)}%` }}
           />
         ))}
@@ -431,9 +599,15 @@ function LoadingPane({ label }: { label: string }) {
 function ErrorPane({ message, hint }: { message?: string; hint?: string }) {
   return (
     <div className="flex flex-1 flex-col items-start justify-center px-8 py-16">
-      <p className="font-serif text-2xl text-paper-ink">Could not pull a transcript</p>
-      <p className="mt-3 max-w-lg text-pretty text-sm text-paper-ink/80">{message ?? "Unknown error."}</p>
-      {hint ? <p className="mt-2 max-w-lg text-pretty text-sm text-paper-muted">{hint}</p> : null}
+      <p className="text-2xl font-medium">Could not pull a transcript</p>
+      <p className="mt-3 max-w-lg text-pretty text-sm text-(--obsidian-dashboard-shell-text-muted)">
+        {message ?? "Unknown error."}
+      </p>
+      {hint ? (
+        <p className="mt-2 max-w-lg text-pretty text-sm text-(--obsidian-dashboard-shell-text-subtle)">
+          {hint}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -447,11 +621,17 @@ function CollectionPane({
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-paper-ink/10 px-6 py-5 md:px-8">
-        <p className="text-xs uppercase tracking-wide text-paper-muted">Pick an episode</p>
-        <h2 className="mt-1 font-serif text-2xl text-paper-ink">{collection.title}</h2>
-        {collection.author ? <p className="mt-1 text-sm text-paper-muted">{collection.author}</p> : null}
-        <p className="mt-2 text-sm text-paper-muted">
+      <div className="border-b border-(--obsidian-dashboard-shell-border) px-6 py-5 md:px-8">
+        <p className="text-xs uppercase tracking-wide text-(--obsidian-dashboard-shell-text-subtle)">
+          Pick an episode
+        </p>
+        <h2 className="mt-1 text-2xl font-medium">{collection.title}</h2>
+        {collection.author ? (
+          <p className="mt-1 text-sm text-(--obsidian-dashboard-shell-text-muted)">
+            {collection.author}
+          </p>
+        ) : null}
+        <p className="mt-2 text-sm text-(--obsidian-dashboard-shell-text-muted)">
           Show and playlist links do not auto-fetch everything. Each tap starts a new job.
         </p>
       </div>
@@ -462,16 +642,20 @@ function CollectionPane({
               <button
                 type="button"
                 onClick={() => onPick(item)}
-                className="flex min-h-14 w-full items-center justify-between gap-4 rounded-lg px-3 py-3 text-left hover:bg-paper-ink/5"
+                className="flex min-h-14 w-full items-center justify-between gap-4 rounded-lg px-3 py-3 text-left hover:bg-(--obsidian-dashboard-shell-hover) focus-visible:outline-2 focus-visible:outline-(--obsidian-dashboard-shell-ring)"
               >
                 <span className="min-w-0">
-                  <span className="block truncate text-sm text-paper-ink">{item.title}</span>
+                  <span className="block truncate text-sm">{item.title}</span>
                   {item.publishedAt ? (
-                    <span className="text-xs text-paper-muted">{item.publishedAt}</span>
+                    <span className="text-xs text-(--obsidian-dashboard-shell-text-subtle)">
+                      {item.publishedAt}
+                    </span>
                   ) : null}
                 </span>
                 {item.durationMs ? (
-                  <span className="shrink-0 text-xs tabular-nums text-paper-muted">{formatClock(item.durationMs)}</span>
+                  <span className="shrink-0 text-xs tabular-nums text-(--obsidian-dashboard-shell-text-subtle)">
+                    {formatClock(item.durationMs)}
+                  </span>
                 ) : null}
               </button>
             </li>
@@ -490,7 +674,7 @@ function TranscriptPane({
   onToggleTimestamps,
   copied,
   onCopy,
-  }: {
+}: {
   transcript: TranscriptResult;
   search: string;
   onSearch: (v: string) => void;
@@ -503,86 +687,118 @@ function TranscriptPane({
   const q = search.trim().toLowerCase();
   const filtered = useMemo(() => {
     if (!q) return transcript.cues;
-    return transcript.cues.filter((c) => c.text.toLowerCase().includes(q) || c.speaker?.toLowerCase().includes(q));
+    return transcript.cues.filter(
+      (c) => c.text.toLowerCase().includes(q) || c.speaker?.toLowerCase().includes(q),
+    );
   }, [transcript.cues, q]);
 
   const collapseAt = Math.max(8, Math.ceil(transcript.cues.length * 0.25));
   const searching = q.length > 0;
-  const visible = searching || expanded || transcript.cues.length <= collapseAt
-    ? filtered
-    : filtered.slice(0, collapseAt);
+  const visible =
+    searching || expanded || transcript.cues.length <= collapseAt
+      ? filtered
+      : filtered.slice(0, collapseAt);
 
   const copyPayload = serializeTranscript(transcript, "txt", { timestamps: showTimestamps });
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-paper-ink/10 px-5 py-5 md:px-8">
-        <h2 className="font-serif text-2xl text-balance text-paper-ink md:text-3xl">{transcript.title}</h2>
+      <div className="border-b border-(--obsidian-dashboard-shell-border) px-5 py-5 md:px-8">
+        <h2 className="text-2xl font-medium text-balance md:text-3xl">{transcript.title}</h2>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {transcript.author ? <Badge className="bg-paper-ink/8 text-paper-muted">{transcript.author}</Badge> : null}
-          <Badge className="bg-paper-ink/8 text-paper-muted">{sourceLabel(transcript.source)}</Badge>
-          {transcript.language ? <Badge className="bg-paper-ink/8 text-paper-muted">{transcript.language}</Badge> : null}
-          {transcript.isAutoGenerated ? <Badge className="bg-paper-ink/8 text-paper-muted">Auto captions</Badge> : null}
-          <Badge className="bg-paper-ink/8 text-paper-muted">{transcript.wordCount.toLocaleString()} words</Badge>
+          {transcript.author ? (
+            <Badge className="bg-(--obsidian-dashboard-shell-muted) text-(--obsidian-dashboard-shell-text-muted)">
+              {transcript.author}
+            </Badge>
+          ) : null}
+          <Badge className="bg-(--obsidian-dashboard-shell-muted) text-(--obsidian-dashboard-shell-text-muted)">
+            {sourceLabel(transcript.source)}
+          </Badge>
+          {transcript.language ? (
+            <Badge className="bg-(--obsidian-dashboard-shell-muted) text-(--obsidian-dashboard-shell-text-muted)">
+              {transcript.language}
+            </Badge>
+          ) : null}
+          {transcript.isAutoGenerated ? (
+            <Badge className="bg-(--obsidian-dashboard-shell-muted) text-(--obsidian-dashboard-shell-text-muted)">
+              Auto captions
+            </Badge>
+          ) : null}
+          <Badge className="bg-(--obsidian-dashboard-shell-muted) text-(--obsidian-dashboard-shell-text-muted)">
+            {transcript.wordCount.toLocaleString()} words
+          </Badge>
           {transcript.durationMs ? (
-            <Badge className="bg-paper-ink/8 text-paper-muted">{formatClock(transcript.durationMs)}</Badge>
+            <Badge className="bg-(--obsidian-dashboard-shell-muted) text-(--obsidian-dashboard-shell-text-muted)">
+              {formatClock(transcript.durationMs)}
+            </Badge>
           ) : null}
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            variant="paper"
-            size="sm"
-            onClick={() => onCopy(copyPayload)}
-          >
+          <DashboardButton variant="secondary" size="sm" onClick={() => onCopy(copyPayload)}>
             {copied ? <Check className="size-4" /> : <ClipboardCopy className="size-4" />}
             {copied ? "Copied" : "Copy"}
-          </Button>
-          <Dropdown
-            align="left"
-            label={
-              <>
-                <Download className="size-4" />
+          </DashboardButton>
+          <DashboardMenu>
+            <DashboardMenuTrigger asChild>
+              <DashboardButton variant="secondary" size="sm">
+                <Download aria-hidden />
                 Export
-              </>
-            }
-          >
-            {(["txt", "md", "srt", "vtt", "json"] as ExportFormat[]).map((fmt) => (
-              <DropdownItem key={fmt} onSelect={() => exportTranscript(transcript, fmt, { timestamps: showTimestamps })}>
-                {fmt.toUpperCase()}
-              </DropdownItem>
-            ))}
-          </Dropdown>
-          <Button variant="ghost" size="sm" className="text-paper-ink/70 hover:bg-paper-ink/8 hover:text-paper-ink" onClick={onToggleTimestamps}>
+              </DashboardButton>
+            </DashboardMenuTrigger>
+            <DashboardMenuContent align="start">
+              {(["txt", "md", "srt", "vtt", "json"] as ExportFormat[]).map((fmt) => (
+                <DashboardMenuItem
+                  key={fmt}
+                  onSelect={() => exportTranscript(transcript, fmt, { timestamps: showTimestamps })}
+                >
+                  {fmt.toUpperCase()}
+                </DashboardMenuItem>
+              ))}
+            </DashboardMenuContent>
+          </DashboardMenu>
+          <DashboardButton variant="ghost" size="sm" onClick={onToggleTimestamps}>
             {showTimestamps ? "Hide times" : "Show times"}
-          </Button>
+          </DashboardButton>
         </div>
         <div className="relative mt-4">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-paper-muted" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-(--obsidian-dashboard-shell-text-subtle)" />
           <Input
             value={search}
             onChange={(e) => onSearch(e.target.value)}
             placeholder="Search lines"
-            className="bg-paper-ink/6 pl-10 text-paper-ink placeholder:text-paper-muted focus-visible:ring-paper-ink/30"
+            className="bg-(--obsidian-dashboard-shell-muted) pl-10 text-(--obsidian-dashboard-shell-foreground) placeholder:text-(--obsidian-dashboard-shell-text-subtle) focus-visible:ring-(--obsidian-dashboard-shell-ring)"
             aria-label="Search transcript lines"
           />
         </div>
       </div>
       <Scroll className="relative flex-1 px-5 py-5 md:px-8">
         {visible.length === 0 ? (
-          <p className="text-sm text-paper-muted">No lines match that search.</p>
+          <p className="text-sm text-(--obsidian-dashboard-shell-text-muted)">
+            No lines match that search.
+          </p>
         ) : (
           <ol className="space-y-3">
             {visible.map((cue, i) => (
-              <CueLine key={`${cue.startMs}-${i}`} cue={cue} query={q} showTimestamps={showTimestamps} />
+              <CueLine
+                key={`${cue.startMs}-${i}`}
+                cue={cue}
+                query={q}
+                showTimestamps={showTimestamps}
+              />
             ))}
           </ol>
         )}
         {!searching && !expanded && transcript.cues.length > collapseAt ? (
           <div className="relative mt-4">
-            <div className="pointer-events-none absolute -top-16 left-0 right-0 h-16 bg-gradient-to-t from-paper to-transparent" />
-            <Button variant="paper" className="w-full" onClick={() => setExpanded(true)}>
+            <div className="pointer-events-none absolute -top-16 left-0 right-0 h-16 bg-gradient-to-t from-(--obsidian-dashboard-shell-control) to-transparent" />
+            <DashboardButton
+              variant="secondary"
+              size="md"
+              className="w-full"
+              onClick={() => setExpanded(true)}
+            >
               See more ({transcript.cues.length - collapseAt} lines)
-            </Button>
+            </DashboardButton>
           </div>
         ) : null}
       </Scroll>
@@ -590,13 +806,23 @@ function TranscriptPane({
   );
 }
 
-function CueLine({ cue, query, showTimestamps }: { cue: Cue; query: string; showTimestamps: boolean }) {
+function CueLine({
+  cue,
+  query,
+  showTimestamps,
+}: {
+  cue: Cue;
+  query: string;
+  showTimestamps: boolean;
+}) {
   return (
     <li className="flex gap-4 text-[15px] leading-relaxed">
       {showTimestamps ? (
-        <span className="w-12 shrink-0 pt-0.5 text-xs tabular-nums text-paper-muted">{formatClock(cue.startMs)}</span>
+        <span className="w-12 shrink-0 pt-0.5 text-xs tabular-nums text-(--obsidian-dashboard-shell-text-subtle)">
+          {formatClock(cue.startMs)}
+        </span>
       ) : null}
-      <p className="min-w-0 text-pretty text-paper-ink">
+      <p className="min-w-0 text-pretty">
         {cue.speaker ? <span className="font-medium">{cue.speaker}: </span> : null}
         {highlight(cue.text, query)}
       </p>
@@ -611,7 +837,9 @@ function highlight(text: string, query: string) {
   return (
     <>
       {text.slice(0, idx)}
-      <mark className="bg-accent/40 text-paper-ink">{text.slice(idx, idx + query.length)}</mark>
+      <mark className="bg-(--obsidian-dashboard-shell-muted-hover) text-(--obsidian-dashboard-shell-foreground)">
+        {text.slice(idx, idx + query.length)}
+      </mark>
       {text.slice(idx + query.length)}
     </>
   );
@@ -620,14 +848,14 @@ function highlight(text: string, query: string) {
 function StatusDot({ status }: { status: Job["status"] }) {
   const color =
     status === "done"
-      ? "bg-fg"
+      ? "bg-(--obsidian-dashboard-shell-success)"
       : status === "error"
-        ? "bg-danger"
+        ? "bg-(--obsidian-dashboard-shell-danger)"
         : status === "running"
-          ? "bg-accent animate-pulse"
+          ? "bg-(--obsidian-dashboard-shell-warning) animate-pulse"
           : status === "collection"
-            ? "bg-accent"
-            : "bg-muted";
+            ? "bg-(--obsidian-dashboard-shell-warning)"
+            : "bg-(--obsidian-dashboard-shell-text-subtle)";
   return <span className={`size-2 shrink-0 rounded-full ${color}`} aria-hidden="true" />;
 }
 

@@ -5,9 +5,9 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return (
     <input
       className={cn(
-        "min-h-11 w-full rounded-lg bg-fg/6 px-3 text-sm text-fg",
-        "placeholder:text-muted ring-0 outline-none",
-        "focus-visible:ring-2 focus-visible:ring-accent/70",
+        "min-h-11 w-full rounded-lg bg-(--obsidian-dashboard-shell-control) px-3 text-sm text-(--obsidian-dashboard-shell-foreground)",
+        "placeholder:text-(--obsidian-dashboard-shell-text-subtle) ring-0 outline-none",
+        "focus-visible:ring-2 focus-visible:ring-(--obsidian-dashboard-shell-ring)",
         className,
       )}
       {...props}
@@ -19,9 +19,9 @@ export function TextArea({ className, ...props }: TextareaHTMLAttributes<HTMLTex
   return (
     <textarea
       className={cn(
-        "w-full rounded-lg bg-fg/6 px-3 py-3 text-sm text-fg leading-relaxed",
-        "placeholder:text-muted ring-0 outline-none resize-y min-h-24",
-        "focus-visible:ring-2 focus-visible:ring-accent/70",
+        "w-full rounded-lg bg-(--obsidian-dashboard-shell-control) px-3 py-3 text-sm text-(--obsidian-dashboard-shell-foreground) leading-relaxed",
+        "placeholder:text-(--obsidian-dashboard-shell-text-subtle) ring-0 outline-none resize-y min-h-24",
+        "focus-visible:ring-2 focus-visible:ring-(--obsidian-dashboard-shell-ring)",
         className,
       )}
       {...props}
