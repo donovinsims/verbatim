@@ -2,6 +2,7 @@ import { fetchJson, fetchText, HttpError } from "./http";
 import { parseDurationSeconds } from "./match";
 import { cuesToText, parseCaptionPayload, wordCount } from "./parse-caption";
 import { youtubeWatchUrl } from "./parse-url";
+import { fetchTranscriptApi } from "./transcript-api";
 import type { CollectionResult, Cue, TranscriptResult } from "./types";
 
 const ANDROID_VERSION = "21.26.364";
@@ -316,11 +317,15 @@ async function fromInnertube(videoId: string, sourceUrl: string): Promise<Transc
 }
 
 const INVIDIOUS_HOSTS = [
-  "https://inv.nadeko.net",
-  "https://invidious.nerdvpn.de",
+  // Public Invidious API instances are dying: as of 2026-10-12 the registry
+  // (https://api.invidious.io) lists only invidious.f5.si with the API
+  // enabled, and it serves empty caption bodies for some videos. The others
+  // that used to work (inv.nadeko.net, invidious.nerdvpn.de,
+  // invidious.tiekoetter.com, yewtu.be) now return bot-check pages, 403s, or
+  // redirects. Refresh this list from the registry before trusting it again.
+  // The keyed transcriptapi.com fallback below is the reliable timed-caption
+  // source; youtube2text.org is the last resort (plain text, no cues).
   "https://invidious.f5.si",
-  "https://invidious.tiekoetter.com",
-  "https://yewtu.be",
 ];
 
 type InvidiousVideo = {
@@ -479,6 +484,14 @@ export async function fetchYoutubeTranscript(videoId: string, sourceUrl: string)
     return await fromInvidious(videoId, sourceUrl);
   } catch (err) {
     errors.push(err instanceof Error ? err.message : String(err));
+  }
+
+  if (process.env.TRANSCRIPTAPI_API_KEY?.trim()) {
+    try {
+      return await fetchTranscriptApi(videoId, sourceUrl);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
   }
 
   try {

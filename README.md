@@ -81,9 +81,10 @@ paste
 
 `fetchYoutubeTranscript` tries three sources, in this order. Do not collapse them into one.
 
-1. **Innertube** (`fromInnertube`). Load a YouTube HTML page, scrape `VISITOR_DATA`, `INNERTUBE_API_KEY`, and client version. Session is cached 40 minutes. Then `player` is called as three clients, in order: `ANDROID` 21.26.364, `ANDROID_VR` 1.65.10 (Quest 3), `IOS` 20.10.4. English manual captions beat auto-captions (`pickTrack`). Caption body is parsed by `parseCaptionPayload`.
-2. **Invidious** (`fromInvidious`) if Innertube is blocked (not if the video truly has no captions). Hosts, in order: `inv.nadeko.net`, `invidious.nerdvpn.de`, `invidious.f5.si`, `invidious.tiekoetter.com`, `yewtu.be`.
-3. **youtube2text.org** demo key (`/api/demo-key`, then `/api/transcribe`). This fallback returns one cue of plain text, not timed captions. It exists so a block does not become a total failure.
+1. **Innertube** (`fromInnertube`). Load a YouTube HTML page, scrape `VISITOR_DATA`, `INNERTUBE_API_KEY`, and client version. Session is cached 40 minutes. Then `player` is called as three clients, in order: `ANDROID` 21.26.364, `ANDROID_VR` 1.65.10 (Quest 3), `IOS` 20.10.4. English manual captions beat auto-captions (`pickTrack`). Caption body is parsed by `parseCaptionPayload`. Note: YouTube increasingly answers server IPs with `LOGIN_REQUIRED` ("Sign in to confirm you're not a bot"); the chain below exists for exactly that case.
+2. **Invidious** (`fromInvidious`) if Innertube is blocked (not if the video truly has no captions). Public instances rot: as of 2026-10-12 only `invidious.f5.si` is still listed at https://api.invidious.io with the API enabled. Refresh `INVIDIOUS_HOSTS` in `youtube.ts` from that registry before trusting it.
+3. **transcriptapi.com** (`fetchTranscriptApi`) when `TRANSCRIPTAPI_API_KEY` is set in the server environment. Keyed, returns timed cues. Skipped silently without the key.
+4. **youtube2text.org** demo key (`/api/demo-key`, then `/api/transcribe`). This fallback returns one cue of plain text, not timed captions. It exists so a block does not become a total failure.
 
 `no_transcript` and `not_found` are returned immediately. They are not retried through the fallbacks. `blocked` means every client failed.
 
@@ -142,6 +143,7 @@ Sheets: transcript at ~96dvh, export as an action sheet, recents as a grouped li
 | Variable | Required? | Used for |
 |---|---|---|
 | `XAI_API_KEY` | No | Last-resort speech-to-text when a podcast has audio but no published transcript |
+| `TRANSCRIPTAPI_API_KEY` | No | Keyed YouTube transcript fallback (transcriptapi.com) with timed cues, used when Innertube is bot-walled and Invidious is down |
 | `VITE_AUTH_ENABLED` | No | Scaffold auth. This app does not gate transcripts behind login |
 
 YouTube captions, Apple lookup, Spotify oEmbed, and RSS do not use an API key.
