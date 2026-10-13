@@ -62,4 +62,69 @@ describe("TranscriptAPI key fallback", () => {
     assert.equal(calls, 1);
     assert.equal(result.text, "A transcript");
   });
+
+  it("tries the secondary account after primary authentication failure", async () => {
+    const authorization: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      authorization.push(new Headers(init?.headers).get("authorization") ?? "");
+      if (authorization.length === 1) return new Response("unauthorized", { status: 401 });
+      return new Response(JSON.stringify({ transcript: [{ text: "Caption", start: 0, duration: 1 }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await fetchTranscriptApi("abcdefghijk", "https://youtu.be/abcdefghijk");
+
+    assert.deepEqual(authorization, ["Bearer primary-test-key", "Bearer secondary-test-key"]);
+    assert.equal(result.text, "Caption");
+  });
+
+  it("reports authentication, credit, quota, and network failures clearly", async () => {
+    const cases: Array<{ status: number; message: RegExp }> = [
+      { status: 403, message: /rejected its API keys/ },
+      { status: 402, message: /out of credits/ },
+      { status: 429, message: /HTTP 429/ },
+      { status: 503, message: /HTTP 503/ },
+    ];
+
+    for (const { status, message } of cases) {
+      globalThis.fetch = (async () => new Response("provider error", { status })) as typeof fetch;
+      await assert.rejects(
+        fetchTranscriptApi("abcdefghijk", "https://youtu.be/abcdefghijk"),
+        message,
+      );
+    }
+
+    globalThis.fetch = (async () => {
+      throw new Error("network unavailable");
+    }) as typeof fetch;
+    await assert.rejects(
+      fetchTranscriptApi("abcdefghijk", "https://youtu.be/abcdefghijk"),
+      /network unavailable/,
+    );
+  });
+
+  it("does not retry a missing transcript or accept empty captions", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    await assert.rejects(
+      fetchTranscriptApi("abcdefghijk", "https://youtu.be/abcdefghijk"),
+      /found no captions/,
+    );
+    assert.equal(calls, 1);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ transcript: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    await assert.rejects(
+      fetchTranscriptApi("abcdefghijk", "https://youtu.be/abcdefghijk"),
+      /no caption segments/,
+    );
+  });
 });

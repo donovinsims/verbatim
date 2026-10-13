@@ -90,7 +90,7 @@ export async function fetchTranscriptApi(videoId: string, sourceUrl: string): Pr
         });
       }
       if (err.status === 401 || err.status === 403) {
-        throw Object.assign(new Error("The hosted transcript service rejected its API key. Check TRANSCRIPTAPI_API_KEY."), {
+        throw Object.assign(new Error("The hosted transcript service rejected its API keys. Check the TranscriptAPI credentials."), {
           code: "blocked" as const,
         });
       }
