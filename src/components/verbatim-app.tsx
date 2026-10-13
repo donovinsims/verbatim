@@ -428,7 +428,7 @@ export function VerbatimApp() {
       : active?.status === "collection"
         ? active.collection?.title || "Show"
         : active?.status === "done"
-          ? "Transcript"
+          ? active.transcript?.title || "Transcript"
           : "Fetching";
 
   return (
