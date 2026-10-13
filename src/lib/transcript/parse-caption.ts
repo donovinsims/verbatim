@@ -1,5 +1,5 @@
-import { decodeEntities, stripHtml } from "./http";
-import type { Cue } from "./types";
+import { decodeEntities, stripHtml } from "./http.ts";
+import type { Cue } from "./types.ts";
 
 function pushCue(cues: Cue[], startMs: number, endMs: number, text: string, speaker?: string) {
   const cleaned = text.replace(/\s+/g, " ").trim();

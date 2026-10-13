@@ -1,12 +1,11 @@
-import { fetchJson, HttpError } from "./http";
-import { cuesToText, wordCount } from "./parse-caption";
-import { youtubeWatchUrl } from "./parse-url";
-import type { Cue, TranscriptResult } from "./types";
+import { fetchJson, HttpError } from "./http.ts";
+import { cuesToText, wordCount } from "./parse-caption.ts";
+import { youtubeWatchUrl } from "./parse-url.ts";
+import type { Cue, TranscriptResult } from "./types.ts";
 
 // Keyed fallback for YouTube transcripts when Innertube is bot-walled and
-// public Invidious instances are down. Set TRANSCRIPTAPI_API_KEY in the
-// server environment (Vercel project settings) to enable it. Without the key
-// the caller skips this provider and moves on to youtube2text.org.
+// public Invidious instances are down. Set TRANSCRIPTAPI_API_KEY (and
+// optionally TRANSCRIPTAPI_API_KEY_2) in the server environment to enable it.
 const API_URL = "https://transcriptapi.com/api/v2/youtube/transcript";
 
 type TranscriptSegment = {
@@ -55,8 +54,10 @@ function toCues(input: TranscriptApiResponse["transcript"]): Cue[] {
 }
 
 export async function fetchTranscriptApi(videoId: string, sourceUrl: string): Promise<TranscriptResult> {
-  const apiKey = process.env.TRANSCRIPTAPI_API_KEY?.trim();
-  if (!apiKey) {
+  const apiKeys = [process.env.TRANSCRIPTAPI_API_KEY, process.env.TRANSCRIPTAPI_API_KEY_2]
+    .map((key) => key?.trim())
+    .filter((key): key is string => Boolean(key));
+  if (!apiKeys.length) {
     throw Object.assign(new Error("TranscriptAPI fallback is not configured"), { code: "blocked" as const });
   }
 
@@ -66,13 +67,22 @@ export async function fetchTranscriptApi(videoId: string, sourceUrl: string): Pr
   url.searchParams.set("include_timestamp", "true");
   url.searchParams.set("send_metadata", "true");
 
-  let payload: TranscriptApiResponse;
-  try {
-    payload = await fetchJson<TranscriptApiResponse>(url.toString(), {
-      timeoutMs: 25_000,
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-  } catch (err) {
+  let payload: TranscriptApiResponse | undefined;
+  let lastError: unknown;
+  for (const apiKey of apiKeys) {
+    try {
+      payload = await fetchJson<TranscriptApiResponse>(url.toString(), {
+        timeoutMs: 25_000,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      break;
+    } catch (err) {
+      lastError = err;
+      if (err instanceof HttpError && err.status === 404) break;
+    }
+  }
+  if (!payload) {
+    const err = lastError;
     if (err instanceof HttpError) {
       if (err.status === 404) {
         throw Object.assign(new Error("The hosted transcript service found no captions for this video."), {

@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { FetchInput, FetchResponse } from "./transcript/types";
+import { runWithTranscriptSignal } from "./transcript/http";
 
 function parseInput(input: unknown): FetchInput {
   if (!input || typeof input !== "object") {
@@ -26,19 +27,22 @@ export const fetchTranscriptFn = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<FetchResponse> => {
     const { resolveTranscript } = await import("./transcript/resolve");
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
     const timeout = new Promise<FetchResponse>((_, reject) => {
       timer = setTimeout(
-        () =>
-          reject(
-            Object.assign(new Error("The transcript fetch took too long."), {
-              code: "network" as const,
-            }),
-          ),
+        () => {
+          const error = Object.assign(new Error("The transcript fetch took too long."), {
+            code: "network" as const,
+          });
+          controller.abort(error);
+          reject(error);
+        },
         OVERALL_TIMEOUT_MS,
       );
     });
     try {
-      return await Promise.race([resolveTranscript(data), timeout]);
+      const transcript = runWithTranscriptSignal(controller.signal, () => resolveTranscript(data));
+      return await Promise.race([transcript, timeout]);
     } finally {
       if (timer) clearTimeout(timer);
     }

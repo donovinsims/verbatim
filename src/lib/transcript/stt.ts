@@ -1,4 +1,5 @@
 import { cuesToText, wordCount } from "./parse-caption";
+import { getTranscriptSignal } from "./http";
 import type { Cue, TranscriptResult } from "./types";
 
 const MAX_BYTES = 50 * 1024 * 1024;
@@ -121,7 +122,7 @@ export async function transcribeAudioUrl(opts: {
       Accept: "audio/*,*/*",
     },
     redirect: "follow",
-    signal: AbortSignal.timeout(45_000),
+    signal: AbortSignal.any([getTranscriptSignal(), AbortSignal.timeout(45_000)].filter(Boolean) as AbortSignal[]),
   });
   if (!audioRes.ok) {
     throw Object.assign(new Error(`Could not download episode audio (${audioRes.status})`), {
@@ -159,7 +160,7 @@ export async function transcribeAudioUrl(opts: {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form,
-    signal: AbortSignal.timeout(90_000),
+    signal: AbortSignal.any([getTranscriptSignal(), AbortSignal.timeout(90_000)].filter(Boolean) as AbortSignal[]),
   });
   if (!sttRes.ok) {
     const errText = await sttRes.text().catch(() => "");
