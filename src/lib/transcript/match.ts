@@ -1,4 +1,4 @@
-import type { Cue, TranscriptResult } from "./types";
+import type { Cue, TranscriptResult } from "./types.ts";
 
 export function parseDurationSeconds(value: unknown): number | null {
   if (value == null || value === "") return null;

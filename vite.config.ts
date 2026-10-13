@@ -171,6 +171,10 @@ export default defineConfig(({ command, isPreview }) => ({
       ? [
           nitro({
             preset: "vercel",
+            // Transcript fetches walk several fallbacks (Innertube, Invidious,
+            // hosted providers) and can run past Vercel's default function
+            // limit; the server function itself caps at 240s.
+            vercel: { functions: { maxDuration: 300 } },
             // Auto-registers server/middleware/* (the PWA install page +
             // manifest + head-tag middleware). Nitro v3 defaults serverDir to
             // false, so removing this silently unwires /?install=1 on deploys.

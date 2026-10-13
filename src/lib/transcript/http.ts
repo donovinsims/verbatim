@@ -1,7 +1,18 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
 const APP_UA = "VerbatimTranscript/1.0 (https://grok.com)";
+const transcriptRequestSignal = new AsyncLocalStorage<AbortSignal>();
+
+export function runWithTranscriptSignal<T>(signal: AbortSignal, work: () => Promise<T>): Promise<T> {
+  return transcriptRequestSignal.run(signal, work);
+}
+
+export function getTranscriptSignal(): AbortSignal | undefined {
+  return transcriptRequestSignal.getStore();
+}
 
 export class HttpError extends Error {
   status: number;
@@ -21,9 +32,14 @@ export async function fetchBuffer(
     body?: string | ArrayBuffer | Uint8Array;
     timeoutMs?: number;
     ua?: "browser" | "app";
+    signal?: AbortSignal;
   } = {},
 ): Promise<{ status: number; contentType: string; body: ArrayBuffer; url: string }> {
   const controller = new AbortController();
+  const parentSignal = opts.signal ?? getTranscriptSignal();
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) abortFromParent();
+  else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 18_000);
   try {
     const res = await fetch(url, {
@@ -45,12 +61,12 @@ export async function fetchBuffer(
       url: res.url || url,
     };
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error("Request timed out");
-    }
+    if (parentSignal?.aborted) throw parentSignal.reason ?? new Error("Transcript request cancelled");
+    if (controller.signal.aborted) throw new Error("Request timed out");
     throw err;
   } finally {
     clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
 

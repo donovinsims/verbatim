@@ -26,6 +26,14 @@ function errorResponse(err: unknown): FetchErr {
       hint: "Wait a moment and try again. Apple Podcasts, Spotify, and RSS episode links still work.",
     };
   }
+  if (code === "auth_required") {
+    return {
+      ok: false,
+      code: "blocked",
+      error: message,
+      hint: "This video requires a YouTube account, age confirmation, membership, or another access check. Verbatim can only read captions available without that restriction.",
+    };
+  }
   if (code === "not_found") {
     return { ok: false, code: "not_found", error: message || "Nothing was found at that URL." };
   }

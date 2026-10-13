@@ -1,8 +1,9 @@
-import { fetchJson, fetchText, HttpError } from "./http";
-import { parseDurationSeconds } from "./match";
-import { cuesToText, parseCaptionPayload, wordCount } from "./parse-caption";
-import { youtubeWatchUrl } from "./parse-url";
-import type { CollectionResult, Cue, TranscriptResult } from "./types";
+import { fetchJson, fetchText, HttpError } from "./http.ts";
+import { parseDurationSeconds } from "./match.ts";
+import { cuesToText, parseCaptionPayload, wordCount } from "./parse-caption.ts";
+import { youtubeWatchUrl } from "./parse-url.ts";
+import { fetchTranscriptApi } from "./transcript-api.ts";
+import type { CollectionResult, Cue, TranscriptResult } from "./types.ts";
 
 const ANDROID_VERSION = "21.26.364";
 const WEB_VERSION = "2.20260910.01.00";
@@ -211,11 +212,18 @@ async function innertubePlayer(
   return JSON.parse(res.text) as PlayerResponse;
 }
 
-function playabilityCode(status?: string, reason?: string): "ok" | "blocked" | "not_found" {
+export function classifyYoutubePlayability(
+  status?: string,
+  reason?: string,
+): "ok" | "blocked" | "not_found" | "auth_required" {
   if (!status || status === "OK") return "ok";
   const text = `${status} ${reason ?? ""}`;
   if (/private|has been removed|doesn't exist|does not exist|deleted|terminated|copyright/i.test(text)) {
     return "not_found";
+  }
+  if (/not a bot/i.test(reason ?? "")) return "blocked";
+  if (/age[- ]?restrict|confirm your age|sign in|log in|login|required|members? only|join this channel|premium|subscription|account access/i.test(text)) {
+    return "auth_required";
   }
   return "blocked";
 }
@@ -223,9 +231,14 @@ function playabilityCode(status?: string, reason?: string): "ok" | "blocked" | "
 async function fromPlayer(videoId: string, player: PlayerResponse, sourceUrl: string): Promise<TranscriptResult> {
   const status = player.playabilityStatus?.status;
   const reason = player.playabilityStatus?.reason ?? status;
-  const code = playabilityCode(status, reason);
+  const code = classifyYoutubePlayability(status, reason);
   if (code === "not_found") {
     throw Object.assign(new Error(reason || "Video is unplayable"), { code: "not_found" as const });
+  }
+  if (code === "auth_required") {
+    throw Object.assign(new Error(reason || "This video requires YouTube sign-in to access."), {
+      code: "auth_required" as const,
+    });
   }
   if (code === "blocked") {
     throw Object.assign(new Error(reason || "YouTube blocked the request"), { code: "blocked" as const });
@@ -305,7 +318,7 @@ async function fromInnertube(videoId: string, sourceUrl: string): Promise<Transc
         blocked = err instanceof Error ? err : new Error(String(err));
         continue;
       }
-      if (code === "not_found") throw err;
+      if (code === "not_found" || code === "auth_required") throw err;
       blocked = err instanceof Error ? err : new Error(String(err));
     }
   }
@@ -316,11 +329,15 @@ async function fromInnertube(videoId: string, sourceUrl: string): Promise<Transc
 }
 
 const INVIDIOUS_HOSTS = [
-  "https://inv.nadeko.net",
-  "https://invidious.nerdvpn.de",
+  // Public Invidious API instances are dying: as of 2026-10-12 the registry
+  // (https://api.invidious.io) lists only invidious.f5.si with the API
+  // enabled, and it serves empty caption bodies for some videos. The others
+  // that used to work (inv.nadeko.net, invidious.nerdvpn.de,
+  // invidious.tiekoetter.com, yewtu.be) now return bot-check pages, 403s, or
+  // redirects. Refresh this list from the registry before trusting it again.
+  // The keyed transcriptapi.com fallback below is the reliable timed-caption
+  // source; youtube2text.org is the last resort (plain text, no cues).
   "https://invidious.f5.si",
-  "https://invidious.tiekoetter.com",
-  "https://yewtu.be",
 ];
 
 type InvidiousVideo = {
@@ -471,7 +488,7 @@ export async function fetchYoutubeTranscript(videoId: string, sourceUrl: string)
     return await fromInnertube(videoId, sourceUrl);
   } catch (err) {
     const code = (err as { code?: string }).code;
-    if (code === "no_transcript" || code === "not_found") throw err;
+    if (code === "no_transcript" || code === "not_found" || code === "auth_required") throw err;
     errors.push(err instanceof Error ? err.message : String(err));
   }
 
@@ -479,6 +496,14 @@ export async function fetchYoutubeTranscript(videoId: string, sourceUrl: string)
     return await fromInvidious(videoId, sourceUrl);
   } catch (err) {
     errors.push(err instanceof Error ? err.message : String(err));
+  }
+
+  if (process.env.TRANSCRIPTAPI_API_KEY?.trim()) {
+    try {
+      return await fetchTranscriptApi(videoId, sourceUrl);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
   }
 
   try {
